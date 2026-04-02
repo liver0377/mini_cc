@@ -1,0 +1,205 @@
+from __future__ import annotations
+
+from collections.abc import AsyncGenerator
+from typing import Any
+
+from mini_cc.context.tool_use import ToolUseContext
+from mini_cc.query_engine.engine import QueryEngine
+from mini_cc.query_engine.state import (
+    Event,
+    Message,
+    Role,
+    TextDelta,
+    ToolCall,
+    ToolCallDelta,
+    ToolCallEnd,
+    ToolCallStart,
+    ToolResultEvent,
+)
+
+
+async def _stream_text_only(messages: list[Message], tools: list[dict[str, Any]]) -> AsyncGenerator[Event, None]:
+    yield TextDelta(content="Hello!")
+
+
+async def _stream_single_tool_then_text(
+    messages: list[Message], tools: list[dict[str, Any]]
+) -> AsyncGenerator[Event, None]:
+    has_tool = any(m.role == Role.TOOL for m in messages)
+    if has_tool:
+        yield TextDelta(content="Done!")
+        return
+
+    yield TextDelta(content="Reading file...")
+    yield ToolCallStart(tool_call_id="tc_1", name="file_read")
+    yield ToolCallDelta(tool_call_id="tc_1", arguments_json_delta='{"file_path":"/tmp/a"}')
+    yield ToolCallEnd(tool_call_id="tc_1")
+
+
+async def _stream_two_turns_then_text(
+    messages: list[Message], tools: list[dict[str, Any]]
+) -> AsyncGenerator[Event, None]:
+    tool_count = sum(1 for m in messages if m.role == Role.TOOL)
+    if tool_count >= 2:
+        yield TextDelta(content="All done!")
+        return
+
+    yield TextDelta(content=f"Turn {tool_count}...")
+    yield ToolCallStart(tool_call_id=f"tc_{tool_count}", name="bash")
+    yield ToolCallDelta(tool_call_id=f"tc_{tool_count}", arguments_json_delta='{"cmd":"ls"}')
+    yield ToolCallEnd(tool_call_id=f"tc_{tool_count}")
+
+
+async def _execute_ok(tool_calls: list[ToolCall]) -> AsyncGenerator[ToolResultEvent, None]:
+    for tc in tool_calls:
+        yield ToolResultEvent(tool_call_id=tc.id, name=tc.name, output=f"result:{tc.name}", success=True)
+
+
+def _make_ctx(
+    *,
+    check_permission: Any = None,
+    is_interrupted: Any = None,
+) -> ToolUseContext:
+    return ToolUseContext(
+        get_schemas=lambda: [{"name": "file_read"}, {"name": "bash"}],
+        execute=_execute_ok,
+        check_permission=check_permission,
+        is_interrupted=is_interrupted,
+    )
+
+
+class TestQueryEngineTextOnly:
+    async def test_yields_text_events(self) -> None:
+        engine = QueryEngine(stream_fn=_stream_text_only, tool_use_ctx=_make_ctx())
+        events = [e async for e in engine.submit_message("hi")]
+
+        assert len(events) == 1
+        assert isinstance(events[0], TextDelta)
+        assert events[0].content == "Hello!"
+
+    async def test_no_tool_execution(self) -> None:
+        engine = QueryEngine(stream_fn=_stream_text_only, tool_use_ctx=_make_ctx())
+        events = [e async for e in engine.submit_message("hi")]
+
+        assert not any(isinstance(e, ToolResultEvent) for e in events)
+
+
+class TestQueryEngineSingleToolCall:
+    async def test_yields_text_and_tool_events(self) -> None:
+        engine = QueryEngine(stream_fn=_stream_single_tool_then_text, tool_use_ctx=_make_ctx())
+        events = [e async for e in engine.submit_message("read file")]
+
+        text_deltas = [e for e in events if isinstance(e, TextDelta)]
+        tool_results = [e for e in events if isinstance(e, ToolResultEvent)]
+
+        assert len(text_deltas) >= 1
+        assert len(tool_results) == 1
+        assert tool_results[0].name == "file_read"
+        assert tool_results[0].success is True
+
+    async def test_state_updated(self) -> None:
+        engine = QueryEngine(stream_fn=_stream_single_tool_then_text, tool_use_ctx=_make_ctx())
+        _ = [e async for e in engine.submit_message("read file")]
+
+        assert engine.state is not None
+        assert engine.state.turn_count == 1
+
+
+class TestQueryEngineMultiTurn:
+    async def test_two_tool_turns(self) -> None:
+        engine = QueryEngine(stream_fn=_stream_two_turns_then_text, tool_use_ctx=_make_ctx())
+        events = [e async for e in engine.submit_message("run twice")]
+
+        tool_results = [e for e in events if isinstance(e, ToolResultEvent)]
+        assert len(tool_results) == 2
+
+    async def test_turn_count_increments(self) -> None:
+        engine = QueryEngine(stream_fn=_stream_two_turns_then_text, tool_use_ctx=_make_ctx())
+        _ = [e async for e in engine.submit_message("run twice")]
+
+        assert engine.state is not None
+        assert engine.state.turn_count == 2
+
+
+class TestQueryEnginePermissionDenied:
+    async def test_denied_tool_yields_permission_error(self) -> None:
+        ctx = _make_ctx(check_permission=lambda name: name == "file_read")
+        engine = QueryEngine(
+            stream_fn=_stream_two_turns_then_text,
+            tool_use_ctx=ctx,
+        )
+        events = [e async for e in engine.submit_message("test")]
+
+        denied = [e for e in events if isinstance(e, ToolResultEvent) and not e.success]
+        assert len(denied) >= 1
+        assert "Permission denied" in denied[0].output
+
+    async def test_denied_tool_not_executed(self) -> None:
+        executed: list[str] = []
+
+        async def _stream_bash_then_text(
+            messages: list[Message], tools: list[dict[str, Any]]
+        ) -> AsyncGenerator[Event, None]:
+            has_tool = any(m.role == Role.TOOL for m in messages)
+            if has_tool:
+                yield TextDelta(content="Done!")
+                return
+
+            yield ToolCallStart(tool_call_id="tc_1", name="bash")
+            yield ToolCallDelta(tool_call_id="tc_1", arguments_json_delta='{"cmd":"rm -rf /"}')
+            yield ToolCallEnd(tool_call_id="tc_1")
+
+        async def _execute_track(
+            tool_calls: list[ToolCall],
+        ) -> AsyncGenerator[ToolResultEvent, None]:
+            for tc in tool_calls:
+                executed.append(tc.name)
+                yield ToolResultEvent(tool_call_id=tc.id, name=tc.name, output="ok", success=True)
+
+        ctx = ToolUseContext(
+            get_schemas=lambda: [{"name": "bash"}],
+            execute=_execute_track,
+            check_permission=lambda name: name != "bash",
+        )
+        engine = QueryEngine(stream_fn=_stream_bash_then_text, tool_use_ctx=ctx)
+        events = [e async for e in engine.submit_message("test")]
+
+        assert "bash" not in executed
+        assert any(isinstance(e, ToolResultEvent) and not e.success for e in events)
+
+
+class TestQueryEngineInterrupted:
+    async def test_interrupted_stops_loop(self) -> None:
+        interrupted = False
+
+        def _check() -> bool:
+            return interrupted
+
+        ctx = _make_ctx(is_interrupted=_check)
+        engine = QueryEngine(stream_fn=_stream_two_turns_then_text, tool_use_ctx=ctx)
+
+        events: list[Event] = []
+        async for event in engine.submit_message("test"):
+            events.append(event)
+            if len(events) == 1:
+                interrupted = True
+
+        assert len(events) >= 1
+
+
+class TestQueryEngineStateMessages:
+    async def test_messages_include_user_assistant_tool(self) -> None:
+        engine = QueryEngine(stream_fn=_stream_single_tool_then_text, tool_use_ctx=_make_ctx())
+        _ = [e async for e in engine.submit_message("read")]
+
+        assert engine.state is not None
+        messages = engine.state.messages
+        assert messages[0].role == Role.USER
+        assert messages[0].content == "read"
+
+        assistant_msgs = [m for m in messages if m.role == Role.ASSISTANT]
+        assert len(assistant_msgs) >= 1
+
+        tool_msgs = [m for m in messages if m.role == Role.TOOL]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0].name == "file_read"
