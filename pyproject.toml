@@ -5,7 +5,11 @@ description = "基于 Python 实现的轻量级多 Agent 协作代码助手 CLI"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "prompt-toolkit>=3.0.0",
+    "rich>=13.0.0",
+    "typer[all]>=0.15.0",
+]
 
 [project.scripts]
 mini-cc = "mini_cc.cli:app"
