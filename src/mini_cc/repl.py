@@ -9,6 +9,7 @@ from rich import print as rprint
 from rich.console import Console
 from rich.text import Text
 
+from mini_cc.context.system_prompt import EnvInfo, SystemPromptBuilder, collect_env_info
 from mini_cc.context.tool_use import ToolUseContext
 from mini_cc.query_engine.engine import QueryEngine
 from mini_cc.query_engine.state import (
@@ -52,11 +53,18 @@ def load_dotenv() -> None:
         pass
 
 
+class EngineContext:
+    def __init__(self, engine: QueryEngine, prompt_builder: SystemPromptBuilder, env_info: EnvInfo) -> None:
+        self.engine = engine
+        self.prompt_builder = prompt_builder
+        self.env_info = env_info
+
+
 def create_engine(
     config: REPLConfig | None = None,
     *,
     interrupted_event: threading.Event | None = None,
-) -> QueryEngine:
+) -> EngineContext:
     if config is None:
         load_dotenv()
         config = REPLConfig.from_env()
@@ -85,7 +93,11 @@ def create_engine(
         is_interrupted=interrupt_flag.is_set,
     )
 
-    return QueryEngine(stream_fn=provider.stream, tool_use_ctx=tool_use_ctx)
+    engine = QueryEngine(stream_fn=provider.stream, tool_use_ctx=tool_use_ctx)
+    env_info = collect_env_info(config.model)
+    prompt_builder = SystemPromptBuilder()
+
+    return EngineContext(engine=engine, prompt_builder=prompt_builder, env_info=env_info)
 
 
 def render_event(event: Event, *, console: Console | None = None) -> None:

@@ -13,8 +13,8 @@ from rich.panel import Panel
 from rich.text import Text
 
 from mini_cc import __version__
-from mini_cc.query_engine.state import QueryState
-from mini_cc.repl import create_engine, run_message
+from mini_cc.query_engine.state import Message, QueryState, Role
+from mini_cc.repl import EngineContext, create_engine, run_message
 
 app = typer.Typer(
     name="mini-cc",
@@ -22,6 +22,9 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+
+PLAN_MODE = "plan"
+BUILD_MODE = "build"
 
 
 def _version_callback(value: bool) -> None:
@@ -40,9 +43,10 @@ def main(
     pass
 
 
-def _get_prompt_message() -> Callable[[], str]:
+def _get_prompt_message(mode: str) -> Callable[[], str]:
     def _message() -> str:
-        return "> "
+        mode_indicator = f"[{mode}] " if mode == PLAN_MODE else ""
+        return f"{mode_indicator}> "
 
     return _message
 
@@ -59,13 +63,19 @@ def _create_session() -> PromptSession[str]:
     )
 
 
-def _print_banner() -> None:
+def _print_banner(mode: str) -> None:
+    if mode == BUILD_MODE:
+        mode_text = "\n当前模式: [bold green]Build[/] (读写)"
+    else:
+        mode_text = "\n当前模式: [bold yellow]Plan[/] (只读)"
     rprint(
         Panel(
             Text.from_markup(
                 f"Mini Claude Code [dim]v{__version__}[/]\n"
                 "输入消息开始对话，输入 [bold]exit[/] 或 [bold]quit[/] 退出\n"
+                "按 [bold]Tab[/] 切换 Plan/Build 模式\n"
                 "[dim]按 Ctrl+C 中断输入，Ctrl+D 退出[/]"
+                f"{mode_text}"
             ),
             title="mini-cc",
             border_style="green",
@@ -74,20 +84,33 @@ def _print_banner() -> None:
     )
 
 
+def _build_initial_state(ctx: EngineContext, mode: str) -> QueryState:
+    system_content = ctx.prompt_builder.build(ctx.env_info, mode=mode)
+    return QueryState(messages=[Message(role=Role.SYSTEM, content=system_content)])
+
+
+def _rebuild_system_message(state: QueryState, ctx: EngineContext, mode: str) -> None:
+    system_content = ctx.prompt_builder.build(ctx.env_info, mode=mode)
+    if state.messages and state.messages[0].role == Role.SYSTEM:
+        state.messages[0] = Message(role=Role.SYSTEM, content=system_content)
+    else:
+        state.messages.insert(0, Message(role=Role.SYSTEM, content=system_content))
+
+
 @app.command()
 def chat() -> None:
     """启动交互式对话循环。"""
-    _print_banner()
-
+    mode = BUILD_MODE
     interrupted_event = threading.Event()
-    engine = create_engine(interrupted_event=interrupted_event)
+    engine_ctx = create_engine(interrupted_event=interrupted_event)
 
     session = _create_session()
-    state = QueryState()
+    state = _build_initial_state(engine_ctx, mode)
+    _print_banner(mode)
 
     while True:
         try:
-            user_input = session.prompt(_get_prompt_message())
+            user_input = session.prompt(_get_prompt_message(mode))
         except KeyboardInterrupt:
             rprint("[dim]（输入已中断）[/]")
             continue
@@ -103,7 +126,15 @@ def chat() -> None:
             rprint("[dim]再见！[/]")
             break
 
-        run_message(engine, text, state, interrupted_event)
+        # Tab toggle is handled by prompt_toolkit bindings; fallback: explicit commands
+        if text in {"/plan", "/build"}:
+            mode = PLAN_MODE if text == "/plan" else BUILD_MODE
+            _rebuild_system_message(state, engine_ctx, mode)
+            mode_label = "Plan (只读)" if mode == PLAN_MODE else "Build (读写)"
+            rprint(f"[dim]切换到 {mode_label} 模式[/]")
+            continue
+
+        run_message(engine_ctx.engine, text, state, interrupted_event)
 
         rprint()
 
