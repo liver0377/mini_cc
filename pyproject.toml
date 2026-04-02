@@ -7,6 +7,7 @@ license = { text = "MIT" }
 requires-python = ">=3.11"
 dependencies = [
     "prompt-toolkit>=3.0.0",
+    "pydantic>=2.0.0",
     "rich>=13.0.0",
     "typer[all]>=0.15.0",
 ]
@@ -34,6 +35,7 @@ strict = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 
 [build-system]
 requires = ["hatchling"]
