@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -8,6 +9,7 @@ from typing import Annotated
 import typer
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
 from rich import print as rprint
 from rich.panel import Panel
 from rich.text import Text
@@ -19,7 +21,6 @@ from mini_cc.repl import EngineContext, create_engine, run_message
 app = typer.Typer(
     name="mini-cc",
     help="Mini Claude Code — 轻量级多 Agent 协作代码助手 CLI",
-    no_args_is_help=True,
     add_completion=False,
 )
 
@@ -33,19 +34,30 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def main(
+    ctx: typer.Context,
     version: Annotated[
         bool | None,
         typer.Option("--version", "-v", help="显示版本号", callback=_version_callback, is_eager=True),
     ] = None,
 ) -> None:
-    pass
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(tui)
 
 
-def _get_prompt_message(mode: str) -> Callable[[], str]:
+class ModeState:
+    def __init__(self, mode: str = BUILD_MODE) -> None:
+        self.mode = mode
+
+    def toggle(self) -> str:
+        self.mode = PLAN_MODE if self.mode == BUILD_MODE else BUILD_MODE
+        return self.mode
+
+
+def _get_prompt_message(mode_state: ModeState) -> Callable[[], str]:
     def _message() -> str:
-        mode_indicator = f"[{mode}] " if mode == PLAN_MODE else ""
+        mode_indicator = f"[{mode_state.mode}] " if mode_state.mode == PLAN_MODE else ""
         return f"{mode_indicator}> "
 
     return _message
@@ -54,12 +66,27 @@ def _get_prompt_message(mode: str) -> Callable[[], str]:
 _DATA_DIR = Path.home() / ".local" / "share" / "mini_cc"
 
 
-def _create_session() -> PromptSession[str]:
+def _create_session(mode_state: ModeState) -> PromptSession[str]:
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    kb = KeyBindings()
+
+    @kb.add("tab")
+    def _toggle_mode(event: object) -> None:
+        mode_state.toggle()
+        if mode_state.mode == PLAN_MODE:
+            sys.stdout.write("\r\n\033[33m切换到 Plan (只读) 模式\033[0m\r\n")
+        else:
+            sys.stdout.write("\r\n\033[32m切换到 Build (读写) 模式\033[0m\r\n")
+        sys.stdout.flush()
+        prompt_app = event.app  # type: ignore[attr-defined]
+        prompt_app.invalidate()
+
     return PromptSession[str](
         history=FileHistory(str(_DATA_DIR / "history")),
         multiline=False,
         enable_open_in_editor=True,
+        key_bindings=kb,
     )
 
 
@@ -97,26 +124,55 @@ def _rebuild_system_message(state: QueryState, ctx: EngineContext, mode: str) ->
         state.messages.insert(0, Message(role=Role.SYSTEM, content=system_content))
 
 
+def _print_mode_change(mode: str) -> None:
+    if mode == BUILD_MODE:
+        rprint("[dim]切换到 [bold green]Build[/] (读写) 模式[/]")
+    else:
+        rprint("[dim]切换到 [bold yellow]Plan[/] (只读) 模式[/]")
+
+
+def _get_current_system_mode(state: QueryState) -> str:
+    if state.messages and state.messages[0].role == Role.SYSTEM:
+        content = state.messages[0].content or ""
+        if "Mode: plan" in content:
+            return PLAN_MODE
+    return BUILD_MODE
+
+
+@app.command()
+def tui() -> None:
+    """启动 Textual TUI 界面（默认）。"""
+    from mini_cc.tui import MiniCCApp
+
+    engine_ctx = create_engine()
+    tui_app = MiniCCApp(engine_ctx)
+    tui_app.run()
+
+
 @app.command()
 def chat() -> None:
-    """启动交互式对话循环。"""
-    mode = BUILD_MODE
+    """启动 prompt_toolkit 交互式对话（备用）。"""
+    mode_state = ModeState(BUILD_MODE)
     interrupted_event = threading.Event()
     engine_ctx = create_engine(interrupted_event=interrupted_event)
 
-    session = _create_session()
-    state = _build_initial_state(engine_ctx, mode)
-    _print_banner(mode)
+    session = _create_session(mode_state)
+    state = _build_initial_state(engine_ctx, mode_state.mode)
+    _print_banner(mode_state.mode)
 
     while True:
         try:
-            user_input = session.prompt(_get_prompt_message(mode))
+            user_input = session.prompt(_get_prompt_message(mode_state))
         except KeyboardInterrupt:
             rprint("[dim]（输入已中断）[/]")
             continue
         except EOFError:
             rprint("[dim]再见！[/]")
             break
+
+        if mode_state.mode != _get_current_system_mode(state):
+            _rebuild_system_message(state, engine_ctx, mode_state.mode)
+            _print_mode_change(mode_state.mode)
 
         text = user_input.strip()
         if not text:
@@ -125,14 +181,6 @@ def chat() -> None:
         if text.lower() in {"exit", "quit"}:
             rprint("[dim]再见！[/]")
             break
-
-        # Tab toggle is handled by prompt_toolkit bindings; fallback: explicit commands
-        if text in {"/plan", "/build"}:
-            mode = PLAN_MODE if text == "/plan" else BUILD_MODE
-            _rebuild_system_message(state, engine_ctx, mode)
-            mode_label = "Plan (只读)" if mode == PLAN_MODE else "Build (读写)"
-            rprint(f"[dim]切换到 {mode_label} 模式[/]")
-            continue
 
         run_message(engine_ctx.engine, text, state, interrupted_event)
 
