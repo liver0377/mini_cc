@@ -103,8 +103,6 @@ def chat() -> None:
             rprint("[dim]再见！[/]")
             break
 
-        rprint(Panel(text, title="You", border_style="blue"))
-
         run_message(engine, text, state, interrupted_event)
 
         rprint()
