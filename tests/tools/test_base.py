@@ -47,10 +47,12 @@ class TestBaseTool:
         tool = _DummyTool()
         api = tool.to_api_format()
 
-        assert api["name"] == "dummy"
-        assert api["description"] == "A dummy tool for testing"
-        assert "properties" in api["input_schema"]
-        assert "value" in api["input_schema"]["properties"]
+        assert api["type"] == "function"
+        func = api["function"]
+        assert func["name"] == "dummy"
+        assert func["description"] == "A dummy tool for testing"
+        assert "properties" in func["parameters"]
+        assert "value" in func["parameters"]["properties"]
 
     def test_execute(self) -> None:
         tool = _DummyTool()
@@ -83,8 +85,9 @@ class TestToolRegistry:
 
         api = registry.to_api_format()
         assert len(api) == 1
-        assert api[0]["name"] == "dummy"
-        assert "input_schema" in api[0]
+        assert api[0]["type"] == "function"
+        assert api[0]["function"]["name"] == "dummy"
+        assert "parameters" in api[0]["function"]
 
     def test_empty_registry(self) -> None:
         registry = ToolRegistry()

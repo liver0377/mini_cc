@@ -8,6 +8,7 @@ from mini_cc.query_engine.engine import QueryEngine
 from mini_cc.query_engine.state import (
     Event,
     Message,
+    QueryState,
     Role,
     TextDelta,
     ToolCall,
@@ -203,3 +204,51 @@ class TestQueryEngineStateMessages:
         tool_msgs = [m for m in messages if m.role == Role.TOOL]
         assert len(tool_msgs) == 1
         assert tool_msgs[0].name == "file_read"
+
+
+class TestQueryEngineExistingState:
+    async def test_reuses_existing_state(self) -> None:
+        state = QueryState()
+        state.messages.append(Message(role=Role.SYSTEM, content="You are helpful."))
+
+        engine = QueryEngine(stream_fn=_stream_text_only, tool_use_ctx=_make_ctx())
+        events = [e async for e in engine.submit_message("hi", state=state)]
+
+        assert len(events) == 1
+        assert isinstance(events[0], TextDelta)
+        assert engine.state is state
+        assert len(state.messages) == 2
+        assert state.messages[0].role == Role.SYSTEM
+        assert state.messages[1].role == Role.USER
+        assert state.messages[1].content == "hi"
+
+    async def test_multi_turn_accumulates_messages(self) -> None:
+        engine = QueryEngine(stream_fn=_stream_single_tool_then_text, tool_use_ctx=_make_ctx())
+
+        state = QueryState()
+        _ = [e async for e in engine.submit_message("first", state=state)]
+        assert len(state.messages) == 3
+        assert state.messages[0].role == Role.USER
+        assert state.messages[0].content == "first"
+
+        _ = [e async for e in engine.submit_message("second", state=state)]
+        assert len(state.messages) == 4
+        assert state.messages[3].role == Role.USER
+        assert state.messages[3].content == "second"
+
+    async def test_existing_state_with_tool_call(self) -> None:
+        engine = QueryEngine(stream_fn=_stream_single_tool_then_text, tool_use_ctx=_make_ctx())
+
+        state = QueryState()
+        _ = [e async for e in engine.submit_message("read file", state=state)]
+
+        user_msgs = [m for m in state.messages if m.role == Role.USER]
+        assert len(user_msgs) == 1
+
+        assistant_msgs = [m for m in state.messages if m.role == Role.ASSISTANT]
+        assert len(assistant_msgs) == 1
+        assert len(assistant_msgs[0].tool_calls) == 1
+
+        tool_msgs = [m for m in state.messages if m.role == Role.TOOL]
+        assert len(tool_msgs) == 1
+        assert state.turn_count == 1
