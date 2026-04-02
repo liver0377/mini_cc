@@ -31,9 +31,12 @@ class BaseTool(ABC):
     def to_api_format(self) -> dict[str, Any]:
         schema = self.input_schema.model_json_schema()
         return {
-            "name": self.name,
-            "description": self.description,
-            "input_schema": schema,
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": schema,
+            },
         }
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
@@ -12,6 +13,8 @@ from rich.panel import Panel
 from rich.text import Text
 
 from mini_cc import __version__
+from mini_cc.query_engine.state import QueryState
+from mini_cc.repl import create_engine, run_message
 
 app = typer.Typer(
     name="mini-cc",
@@ -76,7 +79,11 @@ def chat() -> None:
     """启动交互式对话循环。"""
     _print_banner()
 
+    interrupted_event = threading.Event()
+    engine = create_engine(interrupted_event=interrupted_event)
+
     session = _create_session()
+    state = QueryState()
 
     while True:
         try:
@@ -97,6 +104,10 @@ def chat() -> None:
             break
 
         rprint(Panel(text, title="You", border_style="blue"))
+
+        run_message(engine, text, state, interrupted_event)
+
+        rprint()
 
 
 if __name__ == "__main__":

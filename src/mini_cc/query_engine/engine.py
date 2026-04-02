@@ -31,8 +31,9 @@ class QueryEngine:
         self._tool_use_ctx = tool_use_ctx
         self.state: QueryState | None = None
 
-    async def submit_message(self, prompt: str) -> AsyncGenerator[Event, None]:
-        state = QueryState()
+    async def submit_message(self, prompt: str, state: QueryState | None = None) -> AsyncGenerator[Event, None]:
+        if state is None:
+            state = QueryState()
         state.messages.append(Message(role=Role.USER, content=prompt))
         self.state = state
         async for event in self._query_loop(state):

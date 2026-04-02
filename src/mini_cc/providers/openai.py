@@ -26,19 +26,19 @@ class OpenAIProvider:
         messages: list[Message],
         tools: list[dict[str, Any]],
     ) -> AsyncGenerator[Event, None]:
-        api_messages = [_convert_message(msg) for msg in messages]
-        api_tools = tools if tools else openai.NOT_GIVEN
+        api_messages: list[Any] = [_convert_message(msg) for msg in messages]
+        api_tools: Any = tools if tools else openai.NOT_GIVEN
 
         tool_call_buffers: dict[int, dict[str, str]] = {}
 
-        response = await self._client.chat.completions.create(
+        response = self._client.chat.completions.create(
             model=self._model,
             messages=api_messages,
             tools=api_tools,
             stream=True,
         )
 
-        async for chunk in response:
+        async for chunk in await response:
             if not chunk.choices:
                 continue
 
