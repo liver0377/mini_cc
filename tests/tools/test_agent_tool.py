@@ -5,7 +5,16 @@ from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
 from mini_cc.agent.models import AgentConfig, AgentStatus
-from mini_cc.query_engine.state import Event, QueryState, TextDelta
+from mini_cc.query_engine.state import (
+    AgentStartEvent,
+    AgentToolCallEvent,
+    AgentToolResultEvent,
+    Event,
+    QueryState,
+    TextDelta,
+    ToolCallStart,
+    ToolResultEvent,
+)
 from mini_cc.tools.agent_tool import AgentTool, AgentToolInput
 from mini_cc.tools.base import ToolResult
 
@@ -160,3 +169,101 @@ class TestAsyncExecution:
 
         assert isinstance(result, ToolResult)
         assert "已启动" in result.output
+
+
+class TestAgentToolEventQueue:
+    def _make_tool_with_queue(
+        self, default_timeout: int = 120
+    ) -> tuple[AgentTool, MagicMock, MagicMock, asyncio.Queue[Event]]:
+        manager = AsyncMock()
+        state_fn = MagicMock(return_value=QueryState())
+        queue: asyncio.Queue[Event] = asyncio.Queue()
+        tool = AgentTool(
+            manager=manager,
+            get_parent_state=state_fn,
+            default_timeout=default_timeout,
+            event_queue=queue,
+        )
+        return tool, manager, state_fn, queue
+
+    async def test_sync_emits_agent_start_event(self):
+        tool, manager, _, queue = self._make_tool_with_queue()
+        agent = _make_agent_mock()
+        manager.create_agent = AsyncMock(return_value=agent)
+
+        await tool.async_execute(prompt="hello", sync=True)
+
+        events: list[Event] = []
+        while not queue.empty():
+            events.append(await queue.get())
+        start_events = [e for e in events if isinstance(e, AgentStartEvent)]
+        assert len(start_events) == 1
+        assert start_events[0].agent_id == "a3f7b2c1"
+        assert start_events[0].prompt == "hello"
+
+    async def test_sync_emits_tool_call_events(self):
+        tool, manager, _, queue = self._make_tool_with_queue()
+        sub_events: list[Event] = [
+            TextDelta(content="thinking"),
+            ToolCallStart(tool_call_id="tc_1", name="file_read"),
+            ToolResultEvent(tool_call_id="tc_1", name="file_read", output="file content", success=True),
+            TextDelta(content="done"),
+        ]
+        agent = _make_agent_mock(events=sub_events)
+        manager.create_agent = AsyncMock(return_value=agent)
+
+        await tool.async_execute(prompt="read file", sync=True)
+
+        events: list[Event] = []
+        while not queue.empty():
+            events.append(await queue.get())
+        start_events = [e for e in events if isinstance(e, AgentStartEvent)]
+        tc_events = [e for e in events if isinstance(e, AgentToolCallEvent)]
+        tr_events = [e for e in events if isinstance(e, AgentToolResultEvent)]
+        assert len(start_events) == 1
+        assert len(tc_events) == 1
+        assert tc_events[0].tool_name == "file_read"
+        assert len(tr_events) == 1
+        assert tr_events[0].success is True
+
+    async def test_async_emits_start_event(self):
+        tool, manager, _, queue = self._make_tool_with_queue()
+        agent = _make_agent_mock()
+        manager.create_agent = AsyncMock(return_value=agent)
+
+        await tool.async_execute(prompt="bg task", sync=False)
+
+        events: list[Event] = []
+        while not queue.empty():
+            events.append(await queue.get())
+        start_events = [e for e in events if isinstance(e, AgentStartEvent)]
+        assert len(start_events) == 1
+        assert start_events[0].agent_id == "a3f7b2c1"
+
+    async def test_no_queue_no_events_raised(self):
+        manager = AsyncMock()
+        state_fn = MagicMock(return_value=QueryState())
+        tool = AgentTool(manager=manager, get_parent_state=state_fn)
+        agent = _make_agent_mock()
+        manager.create_agent = AsyncMock(return_value=agent)
+
+        result = await tool.async_execute(prompt="hello", sync=True)
+        assert result.success is True
+
+    async def test_tool_result_preview_truncated(self):
+        tool, manager, _, queue = self._make_tool_with_queue()
+        long_output = "x" * 200
+        sub_events: list[Event] = [
+            ToolResultEvent(tool_call_id="tc_1", name="bash", output=long_output, success=True),
+        ]
+        agent = _make_agent_mock(events=sub_events)
+        manager.create_agent = AsyncMock(return_value=agent)
+
+        await tool.async_execute(prompt="run cmd", sync=True)
+
+        events: list[Event] = []
+        while not queue.empty():
+            events.append(await queue.get())
+        tr_events = [e for e in events if isinstance(e, AgentToolResultEvent)]
+        assert len(tr_events) == 1
+        assert len(tr_events[0].output_preview) <= 103
