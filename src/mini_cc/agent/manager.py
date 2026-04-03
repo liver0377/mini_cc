@@ -5,6 +5,7 @@ from pathlib import Path
 
 from mini_cc.agent.models import AgentConfig, generate_agent_id
 from mini_cc.agent.sub_agent import SubAgent, build_worktree_notice
+from mini_cc.agent.worktree import WorktreeService
 from mini_cc.context.tool_use import ToolUseContext
 from mini_cc.query_engine.engine import QueryEngine, StreamFn
 from mini_cc.query_engine.state import Message, QueryState, Role
@@ -22,13 +23,13 @@ class AgentManager:
         stream_fn: StreamFn,
         task_service: TaskService,
         completion_queue: asyncio.Queue[AgentCompletionEvent],
-        worktrees_base_dir: Path | None = None,
+        worktree_service: WorktreeService | None = None,
     ) -> None:
         self._project_root = project_root
         self._stream_fn = stream_fn
         self._task_service = task_service
         self._completion_queue = completion_queue
-        self._worktrees_dir = worktrees_base_dir or (project_root / ".mini_cc" / "worktrees")
+        self._worktree_svc = worktree_service or WorktreeService(project_root)
         self._agents: dict[str, SubAgent] = {}
 
     @property
@@ -44,7 +45,7 @@ class AgentManager:
         parent_state: QueryState | None = None,
     ) -> SubAgent:
         agent_id = generate_agent_id()
-        worktree_path = self._worktrees_dir / agent_id
+        worktree_path = self._worktree_svc.create(agent_id)
 
         config = AgentConfig(
             agent_id=agent_id,
@@ -63,10 +64,8 @@ class AgentManager:
         )
 
         state = self._build_initial_state(config, fork, parent_state)
-
         engine = self._build_engine(config)
-
-        output_dir = self._worktrees_dir.parent / "tasks"
+        output_dir = self._worktree_svc.output_dir
 
         agent = SubAgent(
             config=config,
@@ -88,15 +87,8 @@ class AgentManager:
         agent = self._agents.pop(agent_id, None)
         if agent is None:
             return
-
-        worktree = Path(agent.config.worktree_path)
-        if worktree.exists():
-            import shutil
-            shutil.rmtree(worktree, ignore_errors=True)
-
-        output_path = (self._worktrees_dir.parent / "tasks") / f"{agent_id}.output"
-        if output_path.exists():
-            output_path.unlink(missing_ok=True)
+        self._worktree_svc.remove(agent_id)
+        self._worktree_svc.cleanup_output(agent_id)
 
     def _build_initial_state(
         self,
