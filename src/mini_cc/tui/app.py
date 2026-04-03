@@ -7,7 +7,7 @@ from mini_cc.tui.screens.chat_screen import ChatScreen
 
 
 class MiniCCApp(App[None]):
-    EXIT_ON_CTRL_C = False
+    EXIT_ON_CTRL_C = True
     TITLE = "mini-cc"
     CSS = """
     Screen {

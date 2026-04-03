@@ -1,4 +1,9 @@
 from mini_cc.query_engine.state import (
+    AgentCompletionNotificationEvent,
+    AgentStartEvent,
+    AgentTextDeltaEvent,
+    AgentToolCallEvent,
+    AgentToolResultEvent,
     Event,
     Message,
     QueryState,
@@ -16,6 +21,11 @@ from mini_cc.query_engine.state import (
 )
 
 __all__ = [
+    "AgentCompletionNotificationEvent",
+    "AgentStartEvent",
+    "AgentTextDeltaEvent",
+    "AgentToolCallEvent",
+    "AgentToolResultEvent",
     "Event",
     "Message",
     "QueryState",

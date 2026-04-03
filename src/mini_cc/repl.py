@@ -2,26 +2,36 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
 import sys
 import threading
+from pathlib import Path
 
 from rich import print as rprint
 from rich.console import Console
 from rich.text import Text
 
+from mini_cc.agent.manager import AgentManager
+from mini_cc.agent.models import AgentStatus
 from mini_cc.context.system_prompt import EnvInfo, SystemPromptBuilder, collect_env_info
 from mini_cc.context.tool_use import ToolUseContext
 from mini_cc.query_engine.engine import QueryEngine
 from mini_cc.query_engine.state import (
     AgentCompletionNotificationEvent,
+    AgentStartEvent,
+    AgentToolCallEvent,
+    AgentToolResultEvent,
     Event,
     QueryState,
     TextDelta,
     ToolCallStart,
     ToolResultEvent,
 )
+from mini_cc.task.models import AgentCompletionEvent
+from mini_cc.task.service import TaskService
 from mini_cc.tool_executor.executor import StreamingToolExecutor
 from mini_cc.tools import create_default_registry
+from mini_cc.tools.agent_tool import AgentTool
 
 _MAX_TOOL_OUTPUT_DISPLAY = 200
 
@@ -55,10 +65,39 @@ def load_dotenv() -> None:
 
 
 class EngineContext:
-    def __init__(self, engine: QueryEngine, prompt_builder: SystemPromptBuilder, env_info: EnvInfo) -> None:
+    def __init__(
+        self,
+        engine: QueryEngine,
+        prompt_builder: SystemPromptBuilder,
+        env_info: EnvInfo,
+        agent_manager: AgentManager | None = None,
+        completion_queue: asyncio.Queue[AgentCompletionEvent] | None = None,
+        mode: str = "build",
+    ) -> None:
         self.engine = engine
         self.prompt_builder = prompt_builder
         self.env_info = env_info
+        self.agent_manager = agent_manager
+        self.completion_queue = completion_queue
+        self._mode = mode
+
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    @mode.setter
+    def mode(self, value: str) -> None:
+        self._mode = value
+
+    @property
+    def active_agent_count(self) -> int:
+        if self.agent_manager is None:
+            return 0
+        return sum(
+            1
+            for a in self.agent_manager.agents.values()
+            if a.status in (AgentStatus.CREATED, AgentStatus.RUNNING, AgentStatus.BACKGROUND_RUNNING)
+        )
 
 
 def create_engine(
@@ -83,6 +122,9 @@ def create_engine(
         api_key=config.api_key,
     )
 
+    completion_queue: asyncio.Queue[AgentCompletionEvent] = asyncio.Queue()
+    agent_event_queue: asyncio.Queue[Event] = asyncio.Queue()
+
     registry = create_default_registry()
     executor = StreamingToolExecutor(registry)
 
@@ -94,11 +136,47 @@ def create_engine(
         is_interrupted=interrupt_flag.is_set,
     )
 
-    engine = QueryEngine(stream_fn=provider.stream, tool_use_ctx=tool_use_ctx)
+    engine = QueryEngine(
+        stream_fn=provider.stream,
+        tool_use_ctx=tool_use_ctx,
+        completion_queue=completion_queue,
+        agent_event_queue=agent_event_queue,
+    )
+
+    session_id = secrets.token_hex(4)
+    task_service = TaskService(task_list_id=session_id)
     env_info = collect_env_info(config.model)
     prompt_builder = SystemPromptBuilder()
 
-    return EngineContext(engine=engine, prompt_builder=prompt_builder, env_info=env_info)
+    ctx_ref: list[EngineContext] = []
+
+    agent_manager = AgentManager(
+        project_root=Path.cwd(),
+        stream_fn=provider.stream,
+        task_service=task_service,
+        completion_queue=completion_queue,
+        prompt_builder=prompt_builder,
+        env_info=env_info,
+    )
+
+    engine_ctx = EngineContext(
+        engine=engine,
+        prompt_builder=prompt_builder,
+        env_info=env_info,
+        agent_manager=agent_manager,
+        completion_queue=completion_queue,
+    )
+    ctx_ref.append(engine_ctx)
+
+    agent_tool = AgentTool(
+        manager=agent_manager,
+        get_parent_state=lambda: engine.state if engine.state else QueryState(),
+        event_queue=agent_event_queue,
+        get_mode=lambda: ctx_ref[0].mode,
+    )
+    registry.register(agent_tool)
+
+    return engine_ctx
 
 
 def render_event(event: Event, *, console: Console | None = None) -> None:
@@ -116,6 +194,29 @@ def render_event(event: Event, *, console: Console | None = None) -> None:
         if len(output_preview) > _MAX_TOOL_OUTPUT_DISPLAY:
             output_preview = output_preview[:_MAX_TOOL_OUTPUT_DISPLAY] + "..."
         _print(Text.from_markup(f"  {marker} [cyan]{event.name}[/]: {output_preview}"))
+
+    elif isinstance(event, AgentStartEvent):
+        _print(
+            Text.from_markup(f"  🤖 [bold magenta]子 Agent {event.agent_id}[/] [dim](Task #{event.task_id})[/] 启动")
+        )
+        if event.prompt:
+            _print(Text.from_markup(f"    [dim]{event.prompt}[/]"))
+
+    elif isinstance(event, AgentToolCallEvent):
+        _print(
+            Text.from_markup(
+                f"    ⚙ [magenta]{event.agent_id}[/][dim] ▸ [/][bold cyan]{event.tool_name}[/][dim](...)[/]"
+            )
+        )
+
+    elif isinstance(event, AgentToolResultEvent):
+        marker = "[bold green]✓[/]" if event.success else "[bold red]✗[/]"
+        preview = event.output_preview[:80] + ("..." if len(event.output_preview) > 80 else "")
+        _print(
+            Text.from_markup(
+                f"    {marker} [magenta]{event.agent_id}[/][dim] ▸ [/][cyan]{event.tool_name}[/]: {preview}"
+            )
+        )
 
     elif isinstance(event, AgentCompletionNotificationEvent):
         status_marker = "[bold green]✓[/]" if event.success else "[bold red]✗[/]"

@@ -58,6 +58,33 @@ class ToolResultEvent:
 
 
 @dataclass
+class AgentStartEvent:
+    agent_id: str
+    task_id: int
+    prompt: str
+
+
+@dataclass
+class AgentTextDeltaEvent:
+    agent_id: str
+    content: str
+
+
+@dataclass
+class AgentToolCallEvent:
+    agent_id: str
+    tool_name: str
+
+
+@dataclass
+class AgentToolResultEvent:
+    agent_id: str
+    tool_name: str
+    success: bool
+    output_preview: str
+
+
+@dataclass
 class AgentCompletionNotificationEvent:
     agent_id: str
     task_id: int
@@ -72,6 +99,10 @@ Event = (
     | ToolCallDelta
     | ToolCallEnd
     | ToolResultEvent
+    | AgentStartEvent
+    | AgentTextDeltaEvent
+    | AgentToolCallEvent
+    | AgentToolResultEvent
     | AgentCompletionNotificationEvent
 )
 

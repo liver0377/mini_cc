@@ -34,10 +34,12 @@ class QueryEngine:
         stream_fn: StreamFn,
         tool_use_ctx: ToolUseContext,
         completion_queue: asyncio.Queue[AgentCompletionEvent] | None = None,
+        agent_event_queue: asyncio.Queue[Event] | None = None,
     ) -> None:
         self._stream_fn = stream_fn
         self._tool_use_ctx = tool_use_ctx
         self._completion_queue = completion_queue
+        self._agent_event_queue = agent_event_queue
         self.state: QueryState | None = None
 
     async def submit_message(self, prompt: str, state: QueryState | None = None) -> AsyncGenerator[Event, None]:
@@ -64,6 +66,16 @@ class QueryEngine:
                 output_path=str(evt.output_path),
             )
 
+    async def _drain_agent_events(self) -> AsyncGenerator[Event, None]:
+        if self._agent_event_queue is None:
+            return
+        while not self._agent_event_queue.empty():
+            try:
+                event = self._agent_event_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            yield event
+
     async def _query_loop(self, state: QueryState) -> AsyncGenerator[Event, None]:
         tracking = QueryTracking()
 
@@ -73,6 +85,8 @@ class QueryEngine:
 
             async for notification in self._drain_completions():
                 yield notification
+            async for event in self._drain_agent_events():
+                yield event
 
             schemas = self._tool_use_ctx.get_tool_schemas()
             self._tool_use_ctx.trace("stream_start", turn=tracking.turn)
@@ -104,8 +118,13 @@ class QueryEngine:
 
             tool_results: list[ToolResultEvent] = []
             async for result in self._tool_use_ctx.execute(allowed):
+                async for event in self._drain_agent_events():
+                    yield event
                 yield result
                 tool_results.append(result)
+
+            async for event in self._drain_agent_events():
+                yield event
 
             assistant_content = _extract_text_content(turn_events)
             state.messages.append(
@@ -144,6 +163,11 @@ class QueryEngine:
 
             state.turn_count += 1
             self._tool_use_ctx.trace("stream_end", turn=tracking.turn)
+
+        async for notification in self._drain_completions():
+            yield notification
+        async for event in self._drain_agent_events():
+            yield event
 
 
 def _extract_text_content(events: list[Event]) -> str:

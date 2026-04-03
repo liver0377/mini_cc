@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pyperclip
 from textual.events import Key
 from textual.message import Message
 from textual.widgets import TextArea
@@ -58,12 +57,6 @@ class InputArea(TextArea):
             event.prevent_default()
             return
         if event.key == "ctrl+c":
-            event.prevent_default()
-            sel = self.selected_text
-            if sel:
-                try:
-                    pyperclip.copy(sel)
-                except pyperclip.PyperclipException:
-                    pass
+            self.app.exit()
             return
         await super()._on_key(event)

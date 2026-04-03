@@ -4,6 +4,8 @@ from textual.containers import VerticalScroll
 from textual.widgets import Markdown, Static
 from textual.widgets._markdown import MarkdownStream
 
+_AGENT_COLORS = ["cyan", "magenta", "yellow", "green", "blue", "red"]
+
 
 class ChatArea(VerticalScroll):
     DEFAULT_CSS = """
@@ -43,11 +45,38 @@ class ChatArea(VerticalScroll):
         margin: 0 0;
         width: 1fr;
     }
+
+    ChatArea .agent-label {
+        padding: 0 2;
+        margin: 0 0;
+        width: 1fr;
+    }
+
+    ChatArea .agent-msg {
+        color: $text-muted;
+        padding: 0 2;
+        margin: 0 0;
+        width: 1fr;
+    }
+
+    ChatArea .agent-tool-msg {
+        color: $text-muted;
+        padding: 0 4;
+        margin: 0 0;
+        width: 1fr;
+    }
     """
 
     def __init__(self) -> None:
         super().__init__()
         self._current_stream: MarkdownStream | None = None
+        self._agent_color_index: dict[str, str] = {}
+
+    def _agent_color(self, agent_id: str) -> str:
+        if agent_id not in self._agent_color_index:
+            idx = len(self._agent_color_index) % len(_AGENT_COLORS)
+            self._agent_color_index[agent_id] = _AGENT_COLORS[idx]
+        return self._agent_color_index[agent_id]
 
     async def add_user_message(self, text: str) -> None:
         widget = Static(f"[bold green]❯[/] {text}", classes="user-msg", markup=True)
@@ -84,5 +113,51 @@ class ChatArea(VerticalScroll):
 
     async def add_system_message(self, text: str) -> None:
         widget = Static(text, classes="system-msg", markup=True)
+        await self.mount(widget)
+        self.scroll_end(animate=False)
+
+    async def add_agent_start(self, agent_id: str, task_id: int, prompt: str) -> None:
+        color = self._agent_color(agent_id)
+        widget = Static(
+            f"  🤖 [bold {color}]子 Agent {agent_id}[/][dim] (Task #{task_id})[/] 启动\n    [dim]{prompt}[/]",
+            classes="agent-msg",
+            markup=True,
+        )
+        await self.mount(widget)
+        self.scroll_end(animate=False)
+
+    async def add_agent_tool_call(self, agent_id: str, tool_name: str) -> None:
+        color = self._agent_color(agent_id)
+        widget = Static(
+            f"    ⚙ [{color}]{agent_id}[/][dim] ▸ [/][bold cyan]{tool_name}[/][dim](...)[/]",
+            classes="agent-tool-msg",
+            markup=True,
+        )
+        await self.mount(widget)
+        self.scroll_end(animate=False)
+
+    async def add_agent_tool_result(self, agent_id: str, tool_name: str, success: bool, output_preview: str) -> None:
+        color = self._agent_color(agent_id)
+        marker = "[bold green]✓[/]" if success else "[bold red]✗[/]"
+        preview = output_preview[:100] + "..." if len(output_preview) > 100 else output_preview
+        widget = Static(
+            f"    {marker} [{color}]{agent_id}[/][dim] ▸ [/][cyan]{tool_name}[/]: {preview}",
+            classes="agent-tool-msg",
+            markup=True,
+        )
+        await self.mount(widget)
+        self.scroll_end(animate=False)
+
+    async def add_agent_notification(self, *, agent_id: str, task_id: int, success: bool, output: str) -> None:
+        color = self._agent_color(agent_id)
+        marker = "[bold green]✓[/]" if success else "[bold red]✗[/]"
+        status_text = "完成" if success else "失败"
+        preview = output[:80] + ("..." if len(output) > 80 else "")
+        widget = Static(
+            f"  {marker} [bold {color}]子 Agent {agent_id}[/][dim] (Task #{task_id})[/] {status_text}\n"
+            f"    [dim]{preview}[/]",
+            classes="agent-msg",
+            markup=True,
+        )
         await self.mount(widget)
         self.scroll_end(animate=False)
