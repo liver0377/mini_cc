@@ -4,27 +4,38 @@ Guidance for agentic coding agents working in this repository.
 
 ## Project Overview
 
-Mini Claude Code (`mini_cc`) is a lightweight multi-agent collaborative coding assistant CLI built in pure Python. It aims to understand natural language instructions and automatically perform code writing, file operations, and test execution. The project is in early development — core source files under `src/mini_cc/` are mostly empty scaffolds.
+Mini Claude Code (`mini_cc`) is a lightweight multi-agent collaborative coding assistant CLI built in pure Python. It uses an async agent loop to stream LLM responses, execute tool calls (file read/write/edit, bash, glob, grep), and render results via a Textual TUI or prompt_toolkit REPL.
 
 **Target platform:** Linux/WSL only.
 
 ## Repository Structure
 
 ```
-mini_cc/
-├── src/mini_cc/          # Main source package
-│   ├── __init__.py       # Package init (currently empty)
-│   └── cli.py            # CLI entry point (Typer app, currently empty)
-├── docs/                 # Design documents (in Chinese)
-│   ├── Agent-Loop/       # Agent loop mechanism & streaming design
-│   ├── context/          # Context management (system prompt injection)
-│   ├── memory/           # Memory system (pure Markdown, no database)
-│   ├── security/         # Security (sandbox, Plan/Build modes)
-│   └── tools/            # Tool system (File, Bash, Glob, Grep tools)
-├── tests/                # Unit tests (pytest, directory not yet created)
-├── pyproject.toml        # Project config, dependencies, tool settings
-├── .pre-commit-config.yaml
-└── .github/workflows/ci.yml
+src/mini_cc/
+├── __init__.py              # Package version
+├── __main__.py              # Entry point
+├── cli.py                   # Typer CLI (tui / chat commands)
+├── repl.py                  # REPL loop, engine factory, event rendering
+├── context/                 # System prompt assembly + tool-use context
+├── providers/               # LLM provider Protocol + OpenAI implementation
+├── query_engine/            # Agent loop engine + state/event data models
+├── tool_executor/           # Concurrent/sequential tool execution
+├── tools/                   # Individual tool implementations
+└── tui/                     # Textual TUI (app, screens, widgets)
+
+tests/                       # Mirrors src/mini_cc/ structure
+├── test_repl.py
+├── context/
+├── query_engine/
+├── tool_executor/
+└── tools/
+
+docs/                        # Design documents (in Chinese)
+├── Agent-Loop/              # Agent loop mechanism & streaming
+├── context/                 # System prompt injection
+├── memory/                  # Memory system (pure Markdown)
+├── security/                # Sandbox, Plan/Build modes
+└── tools/                   # Tool system design
 ```
 
 ## Build, Lint, and Test Commands
@@ -32,105 +43,108 @@ mini_cc/
 All commands use `uv run` to execute within the managed virtual environment.
 
 ```bash
-# Install dependencies (includes dev dependencies)
-uv sync
+uv sync                                    # Install all dependencies
 
-# Lint
-uv run ruff check .
-
-# Lint with auto-fix
-uv run ruff check . --fix
-
-# Format check
-uv run ruff format --check .
-
-# Format (write changes)
-uv run ruff format .
+# Lint & Format
+uv run ruff check .                        # Lint
+uv run ruff check . --fix                  # Lint with auto-fix
+uv run ruff format --check .               # Format check only
+uv run ruff format .                       # Format (write changes)
 
 # Type check
 uv run mypy .
 
-# Run all tests
-uv run pytest
+# Tests
+uv run pytest                              # Run all tests
+uv run pytest tests/test_repl.py           # Run a single test file
+uv run pytest tests/test_repl.py::test_bar # Run a single test function
+uv run pytest tests/test_repl.py::test_bar -v  # Single test, verbose
+uv run pytest -k "pattern"                 # Run tests matching keyword
+uv run pytest tests/tools/                 # Run all tests in a directory
 
-# Run a single test file
-uv run pytest tests/test_foo.py
-
-# Run a single test function
-uv run pytest tests/test_foo.py::test_bar
-
-# Run a single test with verbose output
-uv run pytest tests/test_foo.py::test_bar -v
-
-# Run tests matching a keyword
-uv run pytest -k "pattern"
-
-# Install git hooks (do once after clone)
+# Git hooks (run once after clone)
 uv run pre-commit install
 uv run pre-commit install --hook-type commit-msg
 ```
 
 ## Code Style Guidelines
 
-### Formatting (Ruff)
+### Python Version & Formatting
 
 - **Target Python version:** 3.11+
 - **Line length:** 120 characters
-- Use `ruff format` for formatting — it replaces Black in this project.
+- **Formatter:** `ruff format` (replaces Black)
+- **Every source file** starts with `from __future__ import annotations`
 
 ### Lint Rules (Ruff)
 
-The following rule categories are enabled in `pyproject.toml`:
-
-| Code | Category |
-|------|----------|
-| E    | pycodestyle errors |
-| F    | pyflakes |
-| I    | isort (import sorting) |
-| N    | pep8-naming |
-| W    | pycodestyle warnings |
-| UP   | pyupgrade (use modern Python syntax) |
+Enabled in `pyproject.toml`: `E`, `F`, `I`, `W`, `N`, `UP`
 
 ### Imports
 
-- Follow isort conventions (enforced by Ruff rule `I`).
-- stdlib → third-party → local imports, separated by blank lines.
-- Use absolute imports from the package root: `from mini_cc.module import Class`.
+- Follow isort conventions (Ruff rule `I`).
+- Three groups separated by blank lines: stdlib → third-party → local.
+- Use absolute imports from the package root: `from mini_cc.query_engine.state import Message`.
+- No relative imports anywhere in the codebase.
+- `collections.abc` for `AsyncGenerator`, `Callable` (not `typing`).
 
-### Type Annotations (mypy)
+### Type Annotations (mypy strict mode)
 
-- **mypy strict mode is enabled** (`strict = true` in `pyproject.toml`).
 - All functions must have complete type annotations for parameters and return types.
-- Use `py.typed` marker if building a distributable package.
-- Avoid `Any`; use concrete types or generics.
-- Prefer `str | None` over `Optional[str]` (UP rule enforces modern union syntax).
+- Use `str | None` — never `Optional[str]` (UP rule enforces modern union syntax).
+- Use lowercase generics: `list[str]`, `dict[str, Any]` — never `List`, `Dict`.
+- `Any` is acceptable only in `**kwargs: Any` and API payload dicts.
+- Type aliases at module level in PascalCase: `Event = TextDelta | ToolCallStart | ...`
+- `@runtime_checkable` Protocol classes for interfaces.
 
-### Naming Conventions (PEP 8, enforced by N rules)
+### Data Models
 
-- **Modules/packages:** `snake_case`
-- **Classes:** `PascalCase`
-- **Functions/methods:** `snake_case`
-- **Constants:** `UPPER_SNAKE_CASE`
-- **Private members:** prefix with underscore `_`
+- **Pydantic `BaseModel`** for API-serializable data with validation (`ToolCall`, `Message`, `QueryState`, `ToolResult`, tool input schemas).
+- **`@dataclass`** for internal/event types and tracking structs. Use `frozen=True` for immutable config.
+- **`StrEnum`** for enumeration types (e.g., `Role`).
+- **Plain classes** for stateful services (`QueryEngine`, `StreamingToolExecutor`).
+
+### Naming Conventions
+
+| Category | Convention | Example |
+|----------|-----------|---------|
+| Modules/packages | `snake_case` | `query_engine`, `tool_executor` |
+| Classes | `PascalCase` | `QueryEngine`, `FileReadInput` |
+| Functions/methods | `snake_case` | `submit_message`, `collect_tool_calls` |
+| Constants | `UPPER_SNAKE_CASE` | `PLAN_MODE`, `BUILD_MODE` |
+| Private members | `_` prefix | `_query_loop`, `_SAFE_TOOL_NAMES` |
+| Type aliases | `PascalCase` | `Event`, `StreamFn` |
 
 ### Error Handling
 
-- Use specific exception types, never bare `except:`.
-- Prefer custom exception classes defined in a dedicated module.
-- Always include meaningful error messages.
-- Use `raise ... from err` to preserve exception chains.
+- Tool errors are returned via `ToolResult(error="...", success=False)` — not raised exceptions.
+- Catch specific exception types: `UnicodeDecodeError`, `OSError`, `json.JSONDecodeError`, `FileNotFoundError`, `subprocess.TimeoutExpired`.
+- Never use bare `except:`.
+- Use `raise ... from err` to preserve exception chains when re-raising.
+- CLI exits with `sys.exit(1)` and a descriptive error message for fatal config errors.
 
 ### General Python Style
 
 - Use f-strings for string formatting (enforced by UP rule).
-- Use `pathlib.Path` over `os.path` for file path manipulation.
-- Prefer dataclasses or Pydantic models for structured data.
-- No unnecessary trailing whitespace (enforced by pre-commit).
-- Files must end with a newline (enforced by pre-commit).
+- Use `pathlib.Path` exclusively — never `os.path`.
+- UI-facing strings are in Chinese (tool descriptions, error messages, status bar).
+- Define `__all__` in every `__init__.py` for public modules.
+- No trailing whitespace; files end with a newline (pre-commit enforced).
+
+## Testing Conventions
+
+- **Framework:** pytest with `pytest-asyncio` (async mode: `auto` in `pyproject.toml`).
+- **File naming:** `test_<module>.py` mirroring source structure.
+- **No `@pytest.mark.asyncio` decorator** needed — auto mode handles it.
+- **Test classes** group related scenarios: `TestToolResult`, `TestBaseTool`, `TestQueryEngineTextOnly`.
+- **Assertions:** plain `assert` statements only — no `unittest` assert helpers.
+- **Fixtures:** use pytest `tmp_path` for filesystem tests. No `conftest.py` — helpers are local to each file with `_` prefix (`_DummyTool`, `_make_ctx`, `_noop_execute`).
+- **Async test pattern:** `[e async for e in stream]` list comprehension.
+- **Console testing:** `Console(file=StringIO(), force_terminal=True, width=120)`.
 
 ## Commit Convention
 
-This project follows [Conventional Commits](https://www.conventionalcommits.org/):
+Follows [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
 <type>(<scope>): <description>
@@ -138,18 +152,16 @@ This project follows [Conventional Commits](https://www.conventionalcommits.org/
 
 **Types:** `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `ci`
 
-**Example:** `feat(tools): add file read tool implementation`
-
-Use `cz commit` for interactive commit message generation. Non-compliant messages are rejected by the commit-msg hook.
+Use `cz commit` for interactive generation. Non-compliant messages are rejected by the commit-msg hook.
 
 ## Branch Naming
 
-| Type       | Format             | Example                |
-|------------|--------------------|------------------------|
-| Feature    | `feat/<desc>`      | `feat/multi-agent`     |
-| Bug fix    | `fix/<desc>`       | `fix/token-expiry`     |
-| Docs       | `docs/<desc>`      | `docs/api-reference`   |
-| Refactor   | `refactor/<desc>`  | `refactor/cli-parser`  |
+| Type | Format | Example |
+|------|--------|---------|
+| Feature | `feat/<desc>` | `feat/multi-agent` |
+| Bug fix | `fix/<desc>` | `fix/token-expiry` |
+| Docs | `docs/<desc>` | `docs/api-reference` |
+| Refactor | `refactor/<desc>` | `refactor/cli-parser` |
 
 ## CI Pipeline
 
@@ -164,8 +176,8 @@ GitHub Actions runs on every push/PR to `main` with Python 3.11 and 3.12:
 
 ## Key Design Decisions
 
-- **Memory system:** Pure Markdown files (no database/vector store). Four types: `user`, `feedback`, `project`, `reference`. See `docs/memory/README.md`.
-- **Tool system:** Unified tool class with a registry supporting API format conversion. Tools: FileRead, FileEdit, FileWrite, Bash, Glob, Grep. See `docs/tools/README.md`.
-- **Security:** Sandbox via `bubblewrap`. Two global modes — Plan (read-only) and Build (read-write). See `docs/security/README.md`.
-- **Context:** System prompt built from string arrays for dynamic injection and prompt caching. See `docs/context/README.md`.
-- **Agent Loop:** Streaming with event state machine (message_start, content_block_start/delta/stop, message_delta/stop). See `docs/Agent-Loop/`.
+- **Agent Loop:** Async streaming with event state machine (`TextDelta`, `ToolCallStart/Delta/End`, `ToolResultEvent`). See `docs/Agent-Loop/`.
+- **Tool execution:** Safe tools (`file_read`, `glob`, `grep`) run concurrently; unsafe tools run sequentially. See `docs/tools/`.
+- **Context:** System prompt assembled from static markdown + dynamic env info + optional AGENTS.md. See `docs/context/`.
+- **Memory:** Pure Markdown files (no database). Four types: `user`, `feedback`, `project`, `reference`. See `docs/memory/`.
+- **Security:** Sandbox via `bubblewrap`. Two global modes — Plan (read-only) and Build (read-write). See `docs/security/`.
