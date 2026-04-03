@@ -13,6 +13,7 @@ from mini_cc.context.system_prompt import EnvInfo, SystemPromptBuilder, collect_
 from mini_cc.context.tool_use import ToolUseContext
 from mini_cc.query_engine.engine import QueryEngine
 from mini_cc.query_engine.state import (
+    AgentCompletionNotificationEvent,
     Event,
     QueryState,
     TextDelta,
@@ -115,6 +116,19 @@ def render_event(event: Event, *, console: Console | None = None) -> None:
         if len(output_preview) > _MAX_TOOL_OUTPUT_DISPLAY:
             output_preview = output_preview[:_MAX_TOOL_OUTPUT_DISPLAY] + "..."
         _print(Text.from_markup(f"  {marker} [cyan]{event.name}[/]: {output_preview}"))
+
+    elif isinstance(event, AgentCompletionNotificationEvent):
+        status_marker = "[bold green]✓[/]" if event.success else "[bold red]✗[/]"
+        _print(
+            Text.from_markup(
+                f"  {status_marker} [magenta]子 Agent {event.agent_id}[/]"
+                f" [dim](Task #{event.task_id})[/]"
+                f" {'完成' if event.success else '失败'}"
+            )
+        )
+        if event.output:
+            preview = event.output[:80] + ("..." if len(event.output) > 80 else "")
+            _print(Text.from_markup(f"    [dim]{preview}[/]"))
 
 
 async def _collect_events(

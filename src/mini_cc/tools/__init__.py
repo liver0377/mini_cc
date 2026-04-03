@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from mini_cc.tools.base import BaseTool, ToolRegistry, ToolResult
 from mini_cc.tools.bash import Bash
 from mini_cc.tools.file_edit import FileEdit

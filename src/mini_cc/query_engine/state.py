@@ -57,7 +57,23 @@ class ToolResultEvent:
     success: bool
 
 
-Event = TextDelta | ToolCallStart | ToolCallDelta | ToolCallEnd | ToolResultEvent
+@dataclass
+class AgentCompletionNotificationEvent:
+    agent_id: str
+    task_id: int
+    success: bool
+    output: str
+    output_path: str
+
+
+Event = (
+    TextDelta
+    | ToolCallStart
+    | ToolCallDelta
+    | ToolCallEnd
+    | ToolResultEvent
+    | AgentCompletionNotificationEvent
+)
 
 
 class QueryState(BaseModel):

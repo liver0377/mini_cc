@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
+from functools import partial
 from typing import Any
 
 from pydantic import BaseModel
@@ -27,6 +29,10 @@ class BaseTool(ABC):
 
     @abstractmethod
     def execute(self, **kwargs: Any) -> ToolResult: ...
+
+    async def async_execute(self, **kwargs: Any) -> ToolResult:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, partial(self.execute, **kwargs))
 
     def to_api_format(self) -> dict[str, Any]:
         schema = self.input_schema.model_json_schema()

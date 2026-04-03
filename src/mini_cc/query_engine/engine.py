@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
 from mini_cc.context.tool_use import ToolUseContext
 from mini_cc.query_engine.state import (
+    AgentCompletionNotificationEvent,
     Event,
     Message,
     QueryState,
@@ -18,6 +20,7 @@ from mini_cc.query_engine.state import (
     TurnRecord,
     collect_tool_calls,
 )
+from mini_cc.task.models import AgentCompletionEvent
 
 StreamFn = Callable[
     [list[Message], list[dict[str, Any]]],
@@ -26,9 +29,15 @@ StreamFn = Callable[
 
 
 class QueryEngine:
-    def __init__(self, stream_fn: StreamFn, tool_use_ctx: ToolUseContext) -> None:
+    def __init__(
+        self,
+        stream_fn: StreamFn,
+        tool_use_ctx: ToolUseContext,
+        completion_queue: asyncio.Queue[AgentCompletionEvent] | None = None,
+    ) -> None:
         self._stream_fn = stream_fn
         self._tool_use_ctx = tool_use_ctx
+        self._completion_queue = completion_queue
         self.state: QueryState | None = None
 
     async def submit_message(self, prompt: str, state: QueryState | None = None) -> AsyncGenerator[Event, None]:
@@ -39,12 +48,31 @@ class QueryEngine:
         async for event in self._query_loop(state):
             yield event
 
+    async def _drain_completions(self) -> AsyncGenerator[AgentCompletionNotificationEvent, None]:
+        if self._completion_queue is None:
+            return
+        while not self._completion_queue.empty():
+            try:
+                evt = self._completion_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            yield AgentCompletionNotificationEvent(
+                agent_id=evt.agent_id,
+                task_id=evt.task_id,
+                success=evt.success,
+                output=evt.output,
+                output_path=str(evt.output_path),
+            )
+
     async def _query_loop(self, state: QueryState) -> AsyncGenerator[Event, None]:
         tracking = QueryTracking()
 
         while True:
             if self._tool_use_ctx.is_interrupted:
                 break
+
+            async for notification in self._drain_completions():
+                yield notification
 
             schemas = self._tool_use_ctx.get_tool_schemas()
             self._tool_use_ctx.trace("stream_start", turn=tracking.turn)

@@ -3,17 +3,16 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncGenerator
-from functools import partial
 from typing import Any
 
 from mini_cc.query_engine.state import ToolCall, ToolResultEvent
-from mini_cc.tools.base import BaseTool, ToolRegistry
+from mini_cc.tools.base import BaseTool
 
 _SAFE_TOOL_NAMES = {"file_read", "glob", "grep"}
 
 
 class StreamingToolExecutor:
-    def __init__(self, tool_registry: ToolRegistry) -> None:
+    def __init__(self, tool_registry: Any) -> None:
         self._registry = tool_registry
 
     async def run(self, tool_calls: list[ToolCall]) -> AsyncGenerator[ToolResultEvent, None]:
@@ -48,7 +47,9 @@ class StreamingToolExecutor:
             else:
                 unsafe_tasks.append(entry)
 
-        for coro in asyncio.as_completed([self._execute_tool(tc, tool, kwargs) for tc, tool, kwargs in safe_tasks]):
+        for coro in asyncio.as_completed(
+            [self._execute_tool(tc, tool, kwargs) for tc, tool, kwargs in safe_tasks]
+        ):
             result = await coro
             yield result
 
@@ -58,11 +59,10 @@ class StreamingToolExecutor:
 
     @staticmethod
     async def _execute_tool(tc: ToolCall, tool: BaseTool, kwargs: dict[str, Any]) -> ToolResultEvent:
-        loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, partial(tool.execute, **kwargs))
+        result = await tool.async_execute(**kwargs)
         return ToolResultEvent(
             tool_call_id=tc.id,
-            name=tc.name,
+            name=tool.name,
             output=result.output,
             success=result.success,
         )
