@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import Any
 
 from mini_cc.context.tool_use import ToolUseContext
 from mini_cc.query_engine.engine import QueryEngine
 from mini_cc.query_engine.state import (
+    AgentCompletionNotificationEvent,
     Event,
     Message,
     QueryState,
@@ -17,6 +20,7 @@ from mini_cc.query_engine.state import (
     ToolCallStart,
     ToolResultEvent,
 )
+from mini_cc.task.models import AgentCompletionEvent
 
 
 async def _stream_text_only(messages: list[Message], tools: list[dict[str, Any]]) -> AsyncGenerator[Event, None]:
@@ -252,3 +256,117 @@ class TestQueryEngineExistingState:
         tool_msgs = [m for m in state.messages if m.role == Role.TOOL]
         assert len(tool_msgs) == 1
         assert state.turn_count == 1
+
+
+class TestQueryEngineCompletionQueue:
+    async def test_no_queue_no_notifications(self) -> None:
+        engine = QueryEngine(stream_fn=_stream_text_only, tool_use_ctx=_make_ctx())
+        events = [e async for e in engine.submit_message("hi")]
+
+        assert not any(isinstance(e, AgentCompletionNotificationEvent) for e in events)
+
+    async def test_empty_queue_no_notifications(self) -> None:
+        queue: asyncio.Queue[AgentCompletionEvent] = asyncio.Queue()
+        engine = QueryEngine(
+            stream_fn=_stream_text_only,
+            tool_use_ctx=_make_ctx(),
+            completion_queue=queue,
+        )
+        events = [e async for e in engine.submit_message("hi")]
+
+        assert not any(isinstance(e, AgentCompletionNotificationEvent) for e in events)
+
+    async def test_notification_yielded_before_text(self) -> None:
+        queue: asyncio.Queue[AgentCompletionEvent] = asyncio.Queue()
+        await queue.put(
+            AgentCompletionEvent(
+                agent_id="a3f7b2c1",
+                task_id=1,
+                success=True,
+                output="agent done",
+                output_path=Path("/tmp/a3f7b2c1.output"),
+            )
+        )
+        engine = QueryEngine(
+            stream_fn=_stream_text_only,
+            tool_use_ctx=_make_ctx(),
+            completion_queue=queue,
+        )
+        events = [e async for e in engine.submit_message("hi")]
+
+        notifications = [e for e in events if isinstance(e, AgentCompletionNotificationEvent)]
+        assert len(notifications) == 1
+        assert notifications[0].agent_id == "a3f7b2c1"
+        assert notifications[0].success is True
+        assert notifications[0].output == "agent done"
+        assert notifications[0].output_path == "/tmp/a3f7b2c1.output"
+
+        assert isinstance(events[0], AgentCompletionNotificationEvent)
+        assert isinstance(events[1], TextDelta)
+
+    async def test_multiple_notifications_drained(self) -> None:
+        queue: asyncio.Queue[AgentCompletionEvent] = asyncio.Queue()
+        for i in range(3):
+            await queue.put(
+                AgentCompletionEvent(
+                    agent_id=f"agent{i:08x}",
+                    task_id=i + 1,
+                    success=True,
+                    output=f"output {i}",
+                    output_path=Path(f"/tmp/agent{i:08x}.output"),
+                )
+            )
+        engine = QueryEngine(
+            stream_fn=_stream_text_only,
+            tool_use_ctx=_make_ctx(),
+            completion_queue=queue,
+        )
+        events = [e async for e in engine.submit_message("hi")]
+
+        notifications = [e for e in events if isinstance(e, AgentCompletionNotificationEvent)]
+        assert len(notifications) == 3
+
+    async def test_notifications_on_multi_turn(self) -> None:
+        queue: asyncio.Queue[AgentCompletionEvent] = asyncio.Queue()
+        engine = QueryEngine(
+            stream_fn=_stream_two_turns_then_text,
+            tool_use_ctx=_make_ctx(),
+            completion_queue=queue,
+        )
+
+        await queue.put(
+            AgentCompletionEvent(
+                agent_id="a3f7b2c1",
+                task_id=1,
+                success=True,
+                output="done",
+                output_path=Path("/tmp/out.output"),
+            )
+        )
+
+        events = [e async for e in engine.submit_message("multi")]
+        notifications = [e for e in events if isinstance(e, AgentCompletionNotificationEvent)]
+        assert len(notifications) == 1
+
+    async def test_failed_agent_notification(self) -> None:
+        queue: asyncio.Queue[AgentCompletionEvent] = asyncio.Queue()
+        await queue.put(
+            AgentCompletionEvent(
+                agent_id="deadbeef",
+                task_id=5,
+                success=False,
+                output="error occurred",
+                output_path=Path("/tmp/deadbeef.output"),
+            )
+        )
+        engine = QueryEngine(
+            stream_fn=_stream_text_only,
+            tool_use_ctx=_make_ctx(),
+            completion_queue=queue,
+        )
+        events = [e async for e in engine.submit_message("hi")]
+
+        notifications = [e for e in events if isinstance(e, AgentCompletionNotificationEvent)]
+        assert len(notifications) == 1
+        assert notifications[0].success is False
+        assert notifications[0].output == "error occurred"
