@@ -60,6 +60,48 @@ class TestStatusBarDisplay:
         assert "Ctrl+A" in rendered
 
 
+class TestStatusBarMainThinking:
+    def test_set_main_thinking_true(self):
+        sb = StatusBar()
+        sb.set_main_thinking(True)
+        assert sb._main_thinking is True
+
+    def test_set_main_thinking_false(self):
+        sb = StatusBar()
+        sb.set_main_thinking(True)
+        sb.set_main_thinking(False)
+        assert sb._main_thinking is False
+
+    def test_thinking_shown_in_display(self):
+        sb = StatusBar()
+        sb.update_info("build", "GPT-4o")
+        sb.set_main_thinking(True)
+        rendered = str(sb.render())
+        assert "思考中" in rendered
+
+    def test_thinking_hidden_when_false(self):
+        sb = StatusBar()
+        sb.update_info("build", "GPT-4o")
+        sb.set_main_thinking(False)
+        rendered = str(sb.render())
+        assert "思考中" not in rendered
+
+    def test_tick_spinner_advances_when_thinking(self):
+        sb = StatusBar()
+        sb.set_main_thinking(True)
+        initial_idx = sb._spinner_idx
+        sb.tick_spinner()
+        assert sb._spinner_idx == (initial_idx + 1) % 10
+
+    def test_tick_spinner_static_when_not_thinking_no_agents(self):
+        sb = StatusBar()
+        sb.set_main_thinking(False)
+        sb.update_agent_count(0)
+        initial_idx = sb._spinner_idx
+        sb.tick_spinner()
+        assert sb._spinner_idx == initial_idx
+
+
 class TestStatusBarSpinner:
     def test_tick_spinner_no_agents(self):
         sb = StatusBar()

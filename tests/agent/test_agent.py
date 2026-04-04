@@ -94,6 +94,7 @@ class TestAgentConfig:
         )
         assert cfg.agent_id == "a3f7b2c1"
         assert cfg.is_fork is False
+        assert cfg.is_readonly is False
         assert cfg.parent_agent_id is None
         assert cfg.timeout_seconds == 120
 
@@ -107,6 +108,14 @@ class TestAgentConfig:
         assert cfg.is_fork is True
         assert cfg.parent_agent_id == "a3f7b2c1"
 
+    def test_readonly_config(self):
+        cfg = AgentConfig(
+            agent_id="c1d2e3f4",
+            worktree_path="/tmp/worktree3",
+            is_readonly=True,
+        )
+        assert cfg.is_readonly is True
+
     def test_worktree_property(self):
         from pathlib import Path
 
@@ -114,7 +123,7 @@ class TestAgentConfig:
         assert cfg.worktree == Path("/tmp/wt")
 
     def test_serialization(self):
-        cfg = AgentConfig(agent_id="abc", worktree_path="/tmp/wt", is_fork=True, parent_agent_id="p")
+        cfg = AgentConfig(agent_id="abc", worktree_path="/tmp/wt", is_fork=True, is_readonly=False, parent_agent_id="p")
         data = cfg.model_dump()
         restored = AgentConfig.model_validate(data)
         assert restored == cfg
@@ -130,17 +139,17 @@ class TestAgentStatus:
 
 
 class TestBuildWorktreeNotice:
-    def test_contains_paths(self):
-        cfg = AgentConfig(agent_id="a3f7b2c1", worktree_path="/project/.mini_cc/worktrees/a3f7b2c1")
+    def test_contains_project_root(self):
+        cfg = AgentConfig(agent_id="a3f7b2c1", worktree_path="/project")
         notice = build_worktree_notice(cfg, Path("/project"))
         assert "/project" in notice
-        assert str(cfg.worktree_path) in notice
+        assert "无需路径翻译" in notice
 
 
 class TestSubAgent:
     async def test_run_completes(self, tmp_path, task_service, completion_queue):
         manager = _make_manager(tmp_path, task_service, completion_queue)
-        agent = await manager.create_agent(prompt="test task", sync=True)
+        agent = await manager.create_agent(prompt="test task", readonly=False)
 
         assert agent.status == AgentStatus.CREATED
 
@@ -157,7 +166,7 @@ class TestSubAgent:
 
     async def test_run_background_completes(self, tmp_path, task_service, completion_queue):
         manager = _make_manager(tmp_path, task_service, completion_queue)
-        agent = await manager.create_agent(prompt="bg task", sync=False)
+        agent = await manager.create_agent(prompt="bg task", readonly=True)
 
         await agent.run_background("bg task")
 
@@ -193,7 +202,24 @@ class TestAgentManager:
 
         assert agent.config.agent_id in manager.agents
         assert agent.config.is_fork is False
+        assert agent.config.is_readonly is False
         assert agent.status == AgentStatus.CREATED
+
+    async def test_create_readonly_agent(self, tmp_path, task_service, completion_queue):
+        manager = _make_manager(tmp_path, task_service, completion_queue)
+        agent = await manager.create_agent(prompt="explore code", readonly=True)
+
+        assert agent.config.is_readonly is True
+        assert agent.config.worktree_path != str(tmp_path / "project")
+        assert agent.snapshot_svc is None
+
+    async def test_create_write_agent_uses_project_root(self, tmp_path, task_service, completion_queue):
+        manager = _make_manager(tmp_path, task_service, completion_queue)
+        agent = await manager.create_agent(prompt="fix bug", readonly=False)
+
+        assert agent.config.is_readonly is False
+        assert agent.config.worktree_path == str(tmp_path / "project")
+        assert agent.snapshot_svc is not None
 
     async def test_create_fork_agent(self, tmp_path, task_service, completion_queue):
         manager = _make_manager(tmp_path, task_service, completion_queue)
@@ -214,9 +240,26 @@ class TestAgentManager:
         manager = _make_manager(tmp_path, task_service, completion_queue)
         assert manager.get_agent("nonexistent") is None
 
-    async def test_cleanup(self, tmp_path, task_service, completion_queue):
+    async def test_cleanup_write_agent_no_worktree_removal(self, tmp_path, task_service, completion_queue):
         manager = _make_manager(tmp_path, task_service, completion_queue)
-        agent = await manager.create_agent(prompt="cleanup test")
+        agent = await manager.create_agent(prompt="cleanup test", readonly=False)
+        agent_id = agent.config.agent_id
+
+        assert agent.snapshot_svc is not None
+        snapshot_dir = tmp_path / "project" / ".mini_cc" / "snapshots" / agent_id
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        (snapshot_dir / "_manifest.json").write_text('{"agent_id": "' + agent_id + '", "files": {}}', encoding="utf-8")
+
+        await manager.cleanup(agent_id)
+
+        assert manager.get_agent(agent_id) is None
+        assert not snapshot_dir.exists()
+        manager._worktree_svc.remove.assert_not_called()
+        manager._worktree_svc.cleanup_output.assert_called_once_with(agent_id)
+
+    async def test_cleanup_readonly_agent_removes_worktree(self, tmp_path, task_service, completion_queue):
+        manager = _make_manager(tmp_path, task_service, completion_queue)
+        agent = await manager.create_agent(prompt="cleanup readonly", readonly=True)
         agent_id = agent.config.agent_id
 
         await manager.cleanup(agent_id)

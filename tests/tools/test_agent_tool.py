@@ -23,9 +23,14 @@ def _make_agent_mock(
     agent_id: str = "a3f7b2c1",
     task_id: int = 1,
     events: list[Event] | None = None,
+    readonly: bool = False,
 ) -> MagicMock:
     agent = MagicMock()
-    agent.config = AgentConfig(agent_id=agent_id, worktree_path="/tmp/wt")
+    agent.config = AgentConfig(
+        agent_id=agent_id,
+        worktree_path="/tmp/wt",
+        is_readonly=readonly,
+    )
     agent.task_id = task_id
     agent._status = AgentStatus.CREATED
 
@@ -60,12 +65,12 @@ class TestAgentToolInput:
     def test_defaults(self):
         inp = AgentToolInput(prompt="do something")
         assert inp.prompt == "do something"
-        assert inp.sync is True
+        assert inp.readonly is False
         assert inp.fork is False
 
-    def test_async_mode(self):
-        inp = AgentToolInput(prompt="bg task", sync=False)
-        assert inp.sync is False
+    def test_readonly_mode(self):
+        inp = AgentToolInput(prompt="explore code", readonly=True)
+        assert inp.readonly is True
 
     def test_fork_mode(self):
         inp = AgentToolInput(prompt="fork task", fork=True)
@@ -91,46 +96,25 @@ class TestAgentToolProperties:
         assert "async_execute" in result.output
 
 
-class TestSyncExecution:
-    async def test_sync_returns_collected_output(self):
+class TestWriteExecution:
+    async def test_write_returns_collected_output(self):
         tool, manager, _ = _make_tool()
         agent = _make_agent_mock()
         manager.create_agent = AsyncMock(return_value=agent)
 
-        result = await tool.async_execute(prompt="hello", sync=True)
+        result = await tool.async_execute(prompt="hello")
 
         assert isinstance(result, ToolResult)
         assert result.success is True
         assert "result text" in result.output
         assert agent._status == AgentStatus.COMPLETED
 
-    async def test_sync_timeout_converts_to_background(self):
-        tool, manager, _ = _make_tool(default_timeout=0)
-        slow_events: list[Event] = [TextDelta(content="partial")]
-
-        agent = _make_agent_mock(events=slow_events)
-
-        async def _slow_run(prompt: str) -> AsyncGenerator[Event, None]:
-            agent._status = AgentStatus.RUNNING
-            await asyncio.sleep(2)
-            for e in slow_events:
-                yield e
-
-        agent.run = _slow_run
-        manager.create_agent = AsyncMock(return_value=agent)
-
-        result = await tool.async_execute(prompt="slow task", sync=True)
-
-        assert isinstance(result, ToolResult)
-        assert "后台运行" in result.output
-        assert agent._status == AgentStatus.BACKGROUND_RUNNING
-
-    async def test_sync_fork_uses_parent_state(self):
+    async def test_write_fork_uses_parent_state(self):
         tool, manager, state_fn = _make_tool()
         agent = _make_agent_mock()
         manager.create_agent = AsyncMock(return_value=agent)
 
-        result = await tool.async_execute(prompt="fork task", sync=True, fork=True)
+        result = await tool.async_execute(prompt="fork task", fork=True)
 
         assert isinstance(result, ToolResult)
         state_fn.assert_called_once()
@@ -138,21 +122,31 @@ class TestSyncExecution:
         call_kwargs = manager.create_agent.call_args
         assert call_kwargs.kwargs.get("fork") is True or call_kwargs[1].get("fork") is True
 
-
-class TestAsyncExecution:
-    async def test_async_returns_immediately(self):
+    async def test_write_default_is_not_readonly(self):
         tool, manager, _ = _make_tool()
         agent = _make_agent_mock()
         manager.create_agent = AsyncMock(return_value=agent)
 
-        result = await tool.async_execute(prompt="bg task", sync=False)
+        await tool.async_execute(prompt="hello")
+
+        call_kwargs = manager.create_agent.call_args
+        assert call_kwargs.kwargs.get("readonly") is False
+
+
+class TestReadonlyExecution:
+    async def test_readonly_returns_immediately(self):
+        tool, manager, _ = _make_tool()
+        agent = _make_agent_mock(readonly=True)
+        manager.create_agent = AsyncMock(return_value=agent)
+
+        result = await tool.async_execute(prompt="bg task", readonly=True)
 
         assert isinstance(result, ToolResult)
         assert result.success is True
         assert agent.config.agent_id in result.output
         assert "已启动" in result.output
 
-    async def test_async_does_not_block(self):
+    async def test_readonly_does_not_block(self):
         tool, manager, _ = _make_tool()
         call_count = 0
 
@@ -161,14 +155,24 @@ class TestAsyncExecution:
             call_count += 1
             await asyncio.sleep(10)
 
-        agent = _make_agent_mock()
+        agent = _make_agent_mock(readonly=True)
         agent.run_background = _slow_bg
         manager.create_agent = AsyncMock(return_value=agent)
 
-        result = await tool.async_execute(prompt="bg", sync=False)
+        result = await tool.async_execute(prompt="bg", readonly=True)
 
         assert isinstance(result, ToolResult)
         assert "已启动" in result.output
+
+    async def test_readonly_creates_with_readonly_flag(self):
+        tool, manager, _ = _make_tool()
+        agent = _make_agent_mock(readonly=True)
+        manager.create_agent = AsyncMock(return_value=agent)
+
+        await tool.async_execute(prompt="explore", readonly=True)
+
+        call_kwargs = manager.create_agent.call_args
+        assert call_kwargs.kwargs.get("readonly") is True
 
 
 class TestAgentToolEventQueue:
@@ -186,12 +190,12 @@ class TestAgentToolEventQueue:
         )
         return tool, manager, state_fn, queue
 
-    async def test_sync_emits_agent_start_event(self):
+    async def test_write_emits_agent_start_event(self):
         tool, manager, _, queue = self._make_tool_with_queue()
         agent = _make_agent_mock()
         manager.create_agent = AsyncMock(return_value=agent)
 
-        await tool.async_execute(prompt="hello", sync=True)
+        await tool.async_execute(prompt="hello")
 
         events: list[Event] = []
         while not queue.empty():
@@ -201,7 +205,7 @@ class TestAgentToolEventQueue:
         assert start_events[0].agent_id == "a3f7b2c1"
         assert start_events[0].prompt == "hello"
 
-    async def test_sync_emits_tool_call_events(self):
+    async def test_write_emits_tool_call_events(self):
         tool, manager, _, queue = self._make_tool_with_queue()
         sub_events: list[Event] = [
             TextDelta(content="thinking"),
@@ -212,7 +216,7 @@ class TestAgentToolEventQueue:
         agent = _make_agent_mock(events=sub_events)
         manager.create_agent = AsyncMock(return_value=agent)
 
-        await tool.async_execute(prompt="read file", sync=True)
+        await tool.async_execute(prompt="read file")
 
         events: list[Event] = []
         while not queue.empty():
@@ -226,12 +230,12 @@ class TestAgentToolEventQueue:
         assert len(tr_events) == 1
         assert tr_events[0].success is True
 
-    async def test_async_emits_start_event(self):
+    async def test_readonly_emits_start_event(self):
         tool, manager, _, queue = self._make_tool_with_queue()
-        agent = _make_agent_mock()
+        agent = _make_agent_mock(readonly=True)
         manager.create_agent = AsyncMock(return_value=agent)
 
-        await tool.async_execute(prompt="bg task", sync=False)
+        await tool.async_execute(prompt="bg task", readonly=True)
 
         events: list[Event] = []
         while not queue.empty():
@@ -247,7 +251,7 @@ class TestAgentToolEventQueue:
         agent = _make_agent_mock()
         manager.create_agent = AsyncMock(return_value=agent)
 
-        result = await tool.async_execute(prompt="hello", sync=True)
+        result = await tool.async_execute(prompt="hello")
         assert result.success is True
 
     async def test_tool_result_preview_truncated(self):
@@ -259,7 +263,7 @@ class TestAgentToolEventQueue:
         agent = _make_agent_mock(events=sub_events)
         manager.create_agent = AsyncMock(return_value=agent)
 
-        await tool.async_execute(prompt="run cmd", sync=True)
+        await tool.async_execute(prompt="run cmd")
 
         events: list[Event] = []
         while not queue.empty():

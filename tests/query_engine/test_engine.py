@@ -411,9 +411,7 @@ class TestQueryEngineAgentEventQueue:
         queue: asyncio.Queue[Event] = asyncio.Queue()
         await queue.put(AgentToolCallEvent(agent_id="abc12345", tool_name="file_read"))
         await queue.put(
-            AgentToolResultEvent(
-                agent_id="abc12345", tool_name="file_read", success=True, output_preview="ok"
-            )
+            AgentToolResultEvent(agent_id="abc12345", tool_name="file_read", success=True, output_preview="ok")
         )
         engine = QueryEngine(
             stream_fn=_stream_text_only,
@@ -457,7 +455,9 @@ class TestQueryEngineAgentEventQueue:
     async def test_post_loop_drain(self) -> None:
         agent_queue: asyncio.Queue[Event] = asyncio.Queue()
 
-        async def _stream_then_emit(messages: list[Message], tools: list[dict[str, Any]]) -> AsyncGenerator[Event, None]:
+        async def _stream_then_emit(
+            messages: list[Message], tools: list[dict[str, Any]]
+        ) -> AsyncGenerator[Event, None]:
             yield TextDelta(content="done")
 
         engine = QueryEngine(

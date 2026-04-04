@@ -95,3 +95,29 @@ class TestToolRegistry:
         assert registry.all() == []
         assert registry.to_api_format() == []
         assert registry.get("anything") is None
+
+
+class TestCreateRegistries:
+    def test_default_registry_has_all_tools(self) -> None:
+        from mini_cc.tools import create_default_registry
+
+        registry = create_default_registry()
+        names = {t.name for t in registry.all()}
+        assert "file_read" in names
+        assert "file_edit" in names
+        assert "file_write" in names
+        assert "bash" in names
+        assert "glob" in names
+        assert "grep" in names
+
+    def test_readonly_registry_has_only_read_tools(self) -> None:
+        from mini_cc.tools import create_readonly_registry
+
+        registry = create_readonly_registry()
+        names = {t.name for t in registry.all()}
+        assert "file_read" in names
+        assert "glob" in names
+        assert "grep" in names
+        assert "bash" in names
+        assert "file_edit" not in names
+        assert "file_write" not in names

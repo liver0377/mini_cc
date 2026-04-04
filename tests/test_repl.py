@@ -199,9 +199,7 @@ class TestRenderAgentToolEvents:
     def test_agent_tool_result_success(self) -> None:
         console, buf = self._make_console()
         render_event(
-            AgentToolResultEvent(
-                agent_id="a3f7b2c1", tool_name="bash", success=True, output_preview="ok"
-            ),
+            AgentToolResultEvent(agent_id="a3f7b2c1", tool_name="bash", success=True, output_preview="ok"),
             console=console,
         )
         output = buf.getvalue()
@@ -212,9 +210,7 @@ class TestRenderAgentToolEvents:
     def test_agent_tool_result_failure(self) -> None:
         console, buf = self._make_console()
         render_event(
-            AgentToolResultEvent(
-                agent_id="deadbeef", tool_name="bash", success=False, output_preview="error"
-            ),
+            AgentToolResultEvent(agent_id="deadbeef", tool_name="bash", success=False, output_preview="error"),
             console=console,
         )
         output = buf.getvalue()

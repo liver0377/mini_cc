@@ -154,3 +154,59 @@ class TestMultipleErrors:
         assert results[1].success is False
         assert results[2].success is True
         assert results[2].output == "safe:ok"
+
+
+class TestPreExecuteHook:
+    async def test_hook_called_before_execution(self) -> None:
+        hook_calls: list[tuple[str, dict[str, Any]]] = []
+
+        def hook(tool_name: str, args: dict[str, Any]) -> None:
+            hook_calls.append((tool_name, args))
+
+        executor = StreamingToolExecutor(_make_registry(_SafeTool()), pre_execute_hook=hook)
+        calls = [ToolCall(id="tc_1", name="file_read", arguments='{"value":"hello"}')]
+        results = [r async for r in executor.run(calls)]
+
+        assert len(results) == 1
+        assert results[0].success is True
+        assert results[0].output == "safe:hello"
+        assert len(hook_calls) == 1
+        assert hook_calls[0][0] == "file_read"
+        assert hook_calls[0][1] == {"value": "hello"}
+
+    async def test_hook_none_works(self) -> None:
+        executor = StreamingToolExecutor(_make_registry(_SafeTool()), pre_execute_hook=None)
+        calls = [ToolCall(id="tc_1", name="file_read", arguments='{"value":"test"}')]
+        results = [r async for r in executor.run(calls)]
+
+        assert len(results) == 1
+        assert results[0].success is True
+
+    async def test_hook_not_called_for_unknown_tool(self) -> None:
+        hook_calls: list[tuple[str, dict[str, Any]]] = []
+
+        def hook(tool_name: str, args: dict[str, Any]) -> None:
+            hook_calls.append((tool_name, args))
+
+        executor = StreamingToolExecutor(_make_registry(), pre_execute_hook=hook)
+        calls = [ToolCall(id="tc_1", name="nonexistent", arguments="{}")]
+        results = [r async for r in executor.run(calls)]
+
+        assert len(results) == 1
+        assert results[0].success is False
+        assert len(hook_calls) == 0
+
+    async def test_hook_called_for_unsafe_tool(self) -> None:
+        hook_calls: list[tuple[str, dict[str, Any]]] = []
+
+        def hook(tool_name: str, args: dict[str, Any]) -> None:
+            hook_calls.append((tool_name, args))
+
+        executor = StreamingToolExecutor(_make_registry(_UnsafeTool()), pre_execute_hook=hook)
+        calls = [ToolCall(id="tc_1", name="bash", arguments='{"value":"ls"}')]
+        results = [r async for r in executor.run(calls)]
+
+        assert len(results) == 1
+        assert results[0].success is True
+        assert len(hook_calls) == 1
+        assert hook_calls[0][0] == "bash"

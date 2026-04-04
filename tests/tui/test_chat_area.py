@@ -46,3 +46,9 @@ class TestAgentColors:
         for color in _AGENT_COLORS:
             assert isinstance(color, str)
             assert len(color) > 0
+
+
+class TestChatAreaDoneMarker:
+    def test_add_done_marker_no_current_stream(self):
+        ca = ChatArea()
+        assert ca._current_stream is None
