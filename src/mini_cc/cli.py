@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 import threading
 from collections.abc import Callable
@@ -15,6 +16,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from mini_cc import __version__
+from mini_cc.compression.compressor import compress_messages, replace_with_summary
 from mini_cc.query_engine.state import Message, QueryState, Role
 from mini_cc.repl import EngineContext, create_engine, run_message
 
@@ -181,6 +183,16 @@ def chat() -> None:
         if text.lower() in {"exit", "quit"}:
             rprint("[dim]再见！[/]")
             break
+
+        if text.lower() == "/compact":
+            try:
+                summary = asyncio.run(compress_messages(state.messages, engine_ctx.engine._stream_fn, engine_ctx.model))
+                replace_with_summary(state, summary)
+                rprint("[dim]（对话已手动压缩）[/]")
+            except Exception as e:
+                rprint(f"[bold red]压缩失败: {e}[/]")
+            rprint()
+            continue
 
         run_message(engine_ctx.engine, text, state, interrupted_event)
 

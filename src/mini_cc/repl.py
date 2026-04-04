@@ -22,6 +22,7 @@ from mini_cc.query_engine.state import (
     AgentStartEvent,
     AgentToolCallEvent,
     AgentToolResultEvent,
+    CompactOccurred,
     Event,
     QueryState,
     TextDelta,
@@ -74,6 +75,7 @@ class EngineContext:
         agent_manager: AgentManager | None = None,
         completion_queue: asyncio.Queue[AgentCompletionEvent] | None = None,
         mode: str = "build",
+        model: str = "",
     ) -> None:
         self.engine = engine
         self.prompt_builder = prompt_builder
@@ -81,6 +83,7 @@ class EngineContext:
         self.agent_manager = agent_manager
         self.completion_queue = completion_queue
         self._mode = mode
+        self.model = model
 
     @property
     def mode(self) -> str:
@@ -149,6 +152,7 @@ def create_engine(
         completion_queue=completion_queue,
         agent_event_queue=agent_event_queue,
         post_turn_hook=_post_turn_hook,
+        model=config.model,
     )
 
     session_id = secrets.token_hex(4)
@@ -173,6 +177,7 @@ def create_engine(
         env_info=env_info,
         agent_manager=agent_manager,
         completion_queue=completion_queue,
+        model=config.model,
     )
     ctx_ref.append(engine_ctx)
 
@@ -238,6 +243,13 @@ def render_event(event: Event, *, console: Console | None = None) -> None:
         if event.output:
             preview = event.output[:80] + ("..." if len(event.output) > 80 else "")
             _print(Text.from_markup(f"    [dim]{preview}[/]"))
+
+    elif isinstance(event, CompactOccurred):
+        label = {
+            "auto": "上下文已自动压缩",
+            "reactive": "上下文超出限制，已自动压缩后重试",
+        }.get(event.reason, "对话已压缩")
+        _print(Text.from_markup(f"  [dim]（{label}）[/]"))
 
 
 async def _collect_events(

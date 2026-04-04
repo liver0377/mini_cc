@@ -5,6 +5,7 @@ from typing import Any
 
 import openai
 
+from mini_cc.compression.compressor import ContextLengthExceededError
 from mini_cc.query_engine.state import (
     Event,
     Message,
@@ -31,14 +32,20 @@ class OpenAIProvider:
 
         tool_call_buffers: dict[int, dict[str, str]] = {}
 
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=api_messages,
-            tools=api_tools,
-            stream=True,
-        )
+        try:
+            response = self._client.chat.completions.create(
+                model=self._model,
+                messages=api_messages,
+                tools=api_tools,
+                stream=True,
+            )
+            stream = await response
+        except openai.BadRequestError as e:
+            if _is_context_length_exceeded(e):
+                raise ContextLengthExceededError(str(e)) from e
+            raise
 
-        async for chunk in await response:
+        async for chunk in stream:
             if not chunk.choices:
                 continue
 
@@ -99,3 +106,15 @@ def _convert_message(msg: Message) -> dict[str, Any]:
         result["content"] = msg.content
 
     return result
+
+
+def _is_context_length_exceeded(error: openai.BadRequestError) -> bool:
+    body = getattr(error, "body", None)
+    if isinstance(body, dict):
+        err_obj = body.get("error", {})
+        if isinstance(err_obj, dict):
+            code = err_obj.get("code", "")
+            if code == "context_length_exceeded":
+                return True
+    msg = str(error).lower()
+    return "context_length_exceeded" in msg or "maximum context length" in msg

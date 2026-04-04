@@ -6,11 +6,13 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
 
+from mini_cc.compression.compressor import compress_messages, replace_with_summary
 from mini_cc.query_engine.state import (
     AgentCompletionNotificationEvent,
     AgentStartEvent,
     AgentToolCallEvent,
     AgentToolResultEvent,
+    CompactOccurred,
     Event,
     Message,
     QueryState,
@@ -115,10 +117,38 @@ class ChatScreen(Screen[None]):
             self.app.exit()
             return
 
+        if text.strip().lower() == "/compact":
+            self._pending_text = text
+            self._processing = True
+            self._interrupt_event.clear()
+            self._stream_task = asyncio.create_task(self._run_compact())
+            return
+
         self._pending_text = text
         self._processing = True
         self._interrupt_event.clear()
         self._stream_task = asyncio.create_task(self._run_stream(text))
+
+    async def _run_compact(self) -> None:
+        chat = self.query_one(ChatArea)
+        status = self.query_one(StatusBar)
+
+        try:
+            status.set_main_thinking(True)
+            summary = await compress_messages(
+                self._state.messages,
+                self._engine_ctx.engine._stream_fn,
+                self._engine_ctx.model,
+            )
+            replace_with_summary(self._state, summary)
+            await chat.add_system_message("[dim]（对话已手动压缩）[/]")
+        except Exception as e:
+            await chat.add_system_message(f"[bold red]压缩失败: {e}[/]")
+        finally:
+            status.set_main_thinking(False)
+            self._processing = False
+            self._stream_task = None
+            self.query_one(InputAreaType).focus()
 
     async def _run_stream(self, user_text: str) -> None:
         chat = self.query_one(ChatArea)
@@ -190,6 +220,14 @@ class ChatScreen(Screen[None]):
             )
             await chat.begin_assistant_message()
             self._refresh_agent_count()
+        elif isinstance(event, CompactOccurred):
+            label = {
+                "auto": "上下文已自动压缩",
+                "reactive": "上下文超出限制，已自动压缩后重试",
+            }.get(event.reason, "对话已压缩")
+            await chat.end_assistant_message()
+            await chat.add_system_message(f"[dim]（{label}）[/]")
+            await chat.begin_assistant_message()
 
     async def _poll_remaining_completions(self, chat: ChatArea) -> list[AgentCompletionEvent]:
         completion_queue = self._engine_ctx.completion_queue

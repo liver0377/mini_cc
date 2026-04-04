@@ -5,9 +5,16 @@ import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any
 
+from mini_cc.compression.compressor import (
+    ContextLengthExceededError,
+    compress_messages,
+    replace_with_summary,
+    should_auto_compact,
+)
 from mini_cc.context.tool_use import ToolUseContext
 from mini_cc.query_engine.state import (
     AgentCompletionNotificationEvent,
+    CompactOccurred,
     Event,
     Message,
     QueryState,
@@ -38,12 +45,14 @@ class QueryEngine:
         completion_queue: asyncio.Queue[AgentCompletionEvent] | None = None,
         agent_event_queue: asyncio.Queue[Event] | None = None,
         post_turn_hook: PostTurnHook | None = None,
+        model: str = "",
     ) -> None:
         self._stream_fn = stream_fn
         self._tool_use_ctx = tool_use_ctx
         self._completion_queue = completion_queue
         self._agent_event_queue = agent_event_queue
         self._post_turn_hook = post_turn_hook
+        self._model = model
         self.state: QueryState | None = None
 
     async def submit_message(self, prompt: str, state: QueryState | None = None) -> AsyncGenerator[Event, None]:
@@ -82,6 +91,7 @@ class QueryEngine:
 
     async def _query_loop(self, state: QueryState) -> AsyncGenerator[Event, None]:
         tracking = QueryTracking()
+        has_attempted_reactive = False
 
         while True:
             if self._tool_use_ctx.is_interrupted:
@@ -92,14 +102,30 @@ class QueryEngine:
             async for event in self._drain_agent_events():
                 yield event
 
+            # Phase 1: auto compact
+            if should_auto_compact(state.messages, self._model):
+                summary = await compress_messages(state.messages, self._stream_fn, self._model)
+                replace_with_summary(state, summary)
+                yield CompactOccurred(reason="auto")
+                has_attempted_reactive = False
+
             schemas = self._tool_use_ctx.get_tool_schemas()
             self._tool_use_ctx.trace("stream_start", turn=tracking.turn)
 
             t0 = time.monotonic()
             turn_events: list[Event] = []
-            async for event in self._stream_fn(state.messages, schemas):
-                yield event
-                turn_events.append(event)
+            try:
+                async for event in self._stream_fn(state.messages, schemas):
+                    yield event
+                    turn_events.append(event)
+            except ContextLengthExceededError:
+                if has_attempted_reactive:
+                    raise
+                has_attempted_reactive = True
+                summary = await compress_messages(state.messages, self._stream_fn, self._model)
+                replace_with_summary(state, summary)
+                yield CompactOccurred(reason="reactive")
+                continue
 
             tool_calls = collect_tool_calls(turn_events)
             if not tool_calls:

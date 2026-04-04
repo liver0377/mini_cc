@@ -93,12 +93,18 @@ class AgentCompletionNotificationEvent:
     output_path: str
 
 
+@dataclass
+class CompactOccurred:
+    reason: str
+
+
 Event = (
     TextDelta
     | ToolCallStart
     | ToolCallDelta
     | ToolCallEnd
     | ToolResultEvent
+    | CompactOccurred
     | AgentStartEvent
     | AgentTextDeltaEvent
     | AgentToolCallEvent
