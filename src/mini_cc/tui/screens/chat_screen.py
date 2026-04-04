@@ -20,6 +20,7 @@ from mini_cc.query_engine.state import (
     ToolResultEvent,
 )
 from mini_cc.repl import EngineContext
+from mini_cc.task.models import AgentCompletionEvent
 from mini_cc.tui.screens.agent_screen import AgentScreen
 from mini_cc.tui.widgets import ChatArea, InputArea, StatusBar
 from mini_cc.tui.widgets.input_area import InputArea as InputAreaType
@@ -121,14 +122,15 @@ class ChatScreen(Screen[None]):
 
     async def _run_stream(self, user_text: str) -> None:
         chat = self.query_one(ChatArea)
+        status = self.query_one(StatusBar)
 
         try:
+            status.set_main_thinking(True)
             await chat.add_user_message(user_text)
             await chat.begin_assistant_message()
-            engine = self._engine_ctx.engine
 
             interrupted = False
-            async for event in engine.submit_message(user_text, self._state):
+            async for event in self._engine_ctx.engine.submit_message(user_text, self._state):
                 if self._interrupt_event.is_set():
                     await chat.end_assistant_message()
                     await chat.add_system_message("[dim]（已中断）[/]")
@@ -140,12 +142,18 @@ class ChatScreen(Screen[None]):
 
             if not interrupted:
                 self._interrupt_event.clear()
-                await self._poll_remaining_completions(chat)
+                completion_results = await self._poll_remaining_completions(chat)
+
+                if completion_results:
+                    await self._submit_agent_results(completion_results, chat, status)
+                else:
+                    await chat.add_done_marker()
 
         except Exception as e:
             await chat.end_assistant_message()
             await chat.add_system_message(f"[bold red]错误: {e}[/]")
         finally:
+            status.set_main_thinking(False)
             self._processing = False
             self._stream_task = None
             queued = self._queued_text
@@ -183,16 +191,17 @@ class ChatScreen(Screen[None]):
             await chat.begin_assistant_message()
             self._refresh_agent_count()
 
-    async def _poll_remaining_completions(self, chat: ChatArea) -> None:
+    async def _poll_remaining_completions(self, chat: ChatArea) -> list[AgentCompletionEvent]:
         completion_queue = self._engine_ctx.completion_queue
         if completion_queue is None:
-            return
+            return []
         remaining = self._engine_ctx.active_agent_count
         if remaining == 0:
-            return
+            return []
 
         await chat.add_system_message(f"[dim]等待 {remaining} 个后台子 Agent 完成... (Esc 跳过等待)[/]")
 
+        results: list[AgentCompletionEvent] = []
         try:
             while self._engine_ctx.active_agent_count > 0:
                 if self._interrupt_event.is_set():
@@ -202,6 +211,7 @@ class ChatScreen(Screen[None]):
                 except TimeoutError:
                     continue
 
+                results.append(evt)
                 notification = AgentCompletionNotificationEvent(
                     agent_id=evt.agent_id,
                     task_id=evt.task_id,
@@ -218,6 +228,41 @@ class ChatScreen(Screen[None]):
                 self._refresh_agent_count()
         finally:
             self._interrupt_event.clear()
+        return results
+
+    async def _submit_agent_results(
+        self,
+        results: list[AgentCompletionEvent],
+        chat: ChatArea,
+        status: StatusBar,
+    ) -> None:
+        status.set_main_thinking(True)
+        summary_parts: list[str] = []
+        for r in results:
+            status_label = "成功" if r.success else "失败"
+            summary_parts.append(f"## 子 Agent {r.agent_id} (Task #{r.task_id}) - {status_label}\n\n{r.output}")
+        summary = "\n\n---\n\n".join(summary_parts)
+
+        await chat.add_system_message("[dim]子 Agent 全部完成，正在汇总结果...[/]")
+
+        result_prompt = (
+            f"以下是之前启动的后台只读子 Agent 的完成结果。\n请基于这些结果，继续回复用户的原始问题。\n\n{summary}"
+        )
+
+        await chat.begin_assistant_message()
+        try:
+            async for event in self._engine_ctx.engine.submit_message(result_prompt, self._state):
+                if self._interrupt_event.is_set():
+                    await chat.end_assistant_message()
+                    await chat.add_system_message("[dim]（已中断）[/]")
+                    return
+                await self._handle_event(event, chat)
+            await chat.end_assistant_message()
+        except Exception:
+            await chat.end_assistant_message()
+
+        self._refresh_agent_count()
+        await chat.add_done_marker()
 
     def _refresh_agent_count(self) -> None:
         count = self._engine_ctx.active_agent_count

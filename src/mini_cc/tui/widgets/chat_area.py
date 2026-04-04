@@ -152,12 +152,17 @@ class ChatArea(VerticalScroll):
         color = self._agent_color(agent_id)
         marker = "[bold green]✓[/]" if success else "[bold red]✗[/]"
         status_text = "完成" if success else "失败"
-        preview = output[:80] + ("..." if len(output) > 80 else "")
+        preview = output[:200] + ("..." if len(output) > 200 else "")
         widget = Static(
             f"  {marker} [bold {color}]子 Agent {agent_id}[/][dim] (Task #{task_id})[/] {status_text}\n"
             f"    [dim]{preview}[/]",
             classes="agent-msg",
             markup=True,
         )
+        await self.mount(widget)
+        self.scroll_end(animate=False)
+
+    async def add_done_marker(self) -> None:
+        widget = Static("[dim]── 完成 ──[/]", classes="system-msg", markup=True)
         await self.mount(widget)
         self.scroll_end(animate=False)

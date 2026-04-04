@@ -15,6 +15,7 @@ from mini_cc.agent.manager import AgentManager
 from mini_cc.agent.models import AgentStatus
 from mini_cc.context.system_prompt import EnvInfo, SystemPromptBuilder, collect_env_info
 from mini_cc.context.tool_use import ToolUseContext
+from mini_cc.memory.extractor import MemoryExtractor
 from mini_cc.query_engine.engine import QueryEngine
 from mini_cc.query_engine.state import (
     AgentCompletionNotificationEvent,
@@ -136,11 +137,18 @@ def create_engine(
         is_interrupted=interrupt_flag.is_set,
     )
 
+    memory_extractor = MemoryExtractor(stream_fn=provider.stream, cwd=str(Path.cwd()))
+
+    async def _post_turn_hook(state: QueryState) -> None:
+        if memory_extractor.should_extract(state):
+            memory_extractor.fire_and_forget(state)
+
     engine = QueryEngine(
         stream_fn=provider.stream,
         tool_use_ctx=tool_use_ctx,
         completion_queue=completion_queue,
         agent_event_queue=agent_event_queue,
+        post_turn_hook=_post_turn_hook,
     )
 
     session_id = secrets.token_hex(4)

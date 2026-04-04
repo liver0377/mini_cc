@@ -20,6 +20,15 @@ def create_default_registry() -> ToolRegistry:
     return registry
 
 
+def create_readonly_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(FileRead())
+    registry.register(GlobTool())
+    registry.register(GrepTool())
+    registry.register(Bash())
+    return registry
+
+
 __all__ = [
     "BaseTool",
     "ToolRegistry",
@@ -31,4 +40,5 @@ __all__ = [
     "GlobTool",
     "GrepTool",
     "create_default_registry",
+    "create_readonly_registry",
 ]

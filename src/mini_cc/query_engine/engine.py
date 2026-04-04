@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any
 
 from mini_cc.context.tool_use import ToolUseContext
@@ -27,6 +27,8 @@ StreamFn = Callable[
     AsyncGenerator[Event, None],
 ]
 
+PostTurnHook = Callable[[QueryState], Awaitable[None]]
+
 
 class QueryEngine:
     def __init__(
@@ -35,11 +37,13 @@ class QueryEngine:
         tool_use_ctx: ToolUseContext,
         completion_queue: asyncio.Queue[AgentCompletionEvent] | None = None,
         agent_event_queue: asyncio.Queue[Event] | None = None,
+        post_turn_hook: PostTurnHook | None = None,
     ) -> None:
         self._stream_fn = stream_fn
         self._tool_use_ctx = tool_use_ctx
         self._completion_queue = completion_queue
         self._agent_event_queue = agent_event_queue
+        self._post_turn_hook = post_turn_hook
         self.state: QueryState | None = None
 
     async def submit_message(self, prompt: str, state: QueryState | None = None) -> AsyncGenerator[Event, None]:
@@ -163,6 +167,9 @@ class QueryEngine:
 
             state.turn_count += 1
             self._tool_use_ctx.trace("stream_end", turn=tracking.turn)
+
+            if self._post_turn_hook is not None:
+                await self._post_turn_hook(state)
 
         async for notification in self._drain_completions():
             yield notification

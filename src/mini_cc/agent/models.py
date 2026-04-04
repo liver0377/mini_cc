@@ -24,6 +24,7 @@ class AgentConfig(BaseModel):
     agent_id: str
     worktree_path: str
     is_fork: bool = False
+    is_readonly: bool = False
     parent_agent_id: str | None = None
     timeout_seconds: int = 120
 

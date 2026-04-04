@@ -6,6 +6,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from mini_cc.memory.store import load_memory_index
+
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 _STATIC_FILES = ("intro.md", "rules.md", "caution.md", "tool_guide.md")
 _AGENTS_MD = "AGENTS.md"
@@ -107,5 +109,9 @@ class SystemPromptBuilder:
         agents_md = _read_agents_md(env.working_directory)
         if agents_md:
             parts.append(agents_md)
+
+        memory_index = load_memory_index(Path(env.working_directory))
+        if memory_index:
+            parts.append(memory_index)
 
         return "\n\n".join(parts)

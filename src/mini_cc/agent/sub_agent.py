@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from mini_cc.agent.models import AgentConfig, AgentStatus
 from mini_cc.query_engine.engine import QueryEngine
@@ -13,6 +14,9 @@ from mini_cc.query_engine.state import (
 )
 from mini_cc.task.models import AgentCompletionEvent
 from mini_cc.task.service import TaskService
+
+if TYPE_CHECKING:
+    from mini_cc.agent.snapshot import SnapshotService
 
 
 class SubAgent:
@@ -25,6 +29,7 @@ class SubAgent:
         task_service: TaskService,
         completion_queue: asyncio.Queue[AgentCompletionEvent],
         output_dir: Path,
+        snapshot_svc: SnapshotService | None = None,
     ) -> None:
         self._config = config
         self._engine = engine
@@ -33,6 +38,7 @@ class SubAgent:
         self._task_service = task_service
         self._completion_queue = completion_queue
         self._output_dir = output_dir
+        self.snapshot_svc = snapshot_svc
         self._status = AgentStatus.CREATED
         self._cancel_event = asyncio.Event()
         self._collected_output: list[str] = []
@@ -134,7 +140,6 @@ class SubAgent:
 def build_worktree_notice(config: AgentConfig, project_root: Path) -> str:
     return (
         f"你继承了父代理在 {project_root} 的对话上下文。\n"
-        f"你现在在隔离的 git worktree {config.worktree_path} 中。\n"
-        f"上下文中的路径指向父目录——请翻译到你的 worktree。\n"
+        f"你直接操作主工作区 {project_root}，无需路径翻译。\n"
         f"编辑前请重新读取文件（父代理可能已修改）。"
     )

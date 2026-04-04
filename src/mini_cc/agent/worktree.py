@@ -30,9 +30,7 @@ class WorktreeService:
         )
 
         if result.returncode != 0:
-            raise WorktreeError(
-                f"git worktree add failed (exit {result.returncode}): {result.stderr.strip()}"
-            )
+            raise WorktreeError(f"git worktree add failed (exit {result.returncode}): {result.stderr.strip()}")
 
         return worktree_path
 
@@ -51,6 +49,7 @@ class WorktreeService:
 
         if result.returncode != 0 and worktree_path.exists():
             import shutil
+
             shutil.rmtree(worktree_path, ignore_errors=True)
 
         self._prune()

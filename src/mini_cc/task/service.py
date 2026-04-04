@@ -50,7 +50,7 @@ class TaskService:
                 return task
             except BlockingIOError:
                 fd.close()
-                delay = _LOCK_RETRY_BASE_DELAY * (2 ** attempt)
+                delay = _LOCK_RETRY_BASE_DELAY * (2**attempt)
                 time.sleep(delay)
                 continue
             finally:
@@ -115,9 +115,7 @@ class TaskService:
         return task
 
     async def fail(self, task_id: int, error: str) -> Task:
-        return await self.update(
-            task_id, status=TaskStatus.FAILED, metadata={"error": error}
-        )
+        return await self.update(task_id, status=TaskStatus.FAILED, metadata={"error": error})
 
     async def cancel(self, task_id: int) -> None:
         path = self._task_path(task_id)
@@ -138,11 +136,7 @@ class TaskService:
     async def get_ready_tasks(self) -> list[Task]:
         tasks = await self.list_all()
         completed_ids = {t.id for t in tasks if t.status == TaskStatus.COMPLETED}
-        return [
-            t
-            for t in tasks
-            if t.status == TaskStatus.PENDING and all(b in completed_ids for b in t.blocked_by)
-        ]
+        return [t for t in tasks if t.status == TaskStatus.PENDING and all(b in completed_ids for b in t.blocked_by)]
 
     async def _unblock_downstream(self, completed_id: int) -> None:
         tasks = await self.list_all()
