@@ -15,6 +15,7 @@ ENV/
 
 # IDE
 .vscode/
+.opencode
 .idea/
 *.swp
 *.swo
@@ -36,3 +37,4 @@ uv.lock
 
 # api key
 .env
+
