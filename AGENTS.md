@@ -16,26 +16,26 @@ src/mini_cc/
 ├── __main__.py              # Entry point
 ├── cli.py                   # Typer CLI (tui / chat commands)
 ├── repl.py                  # REPL loop, engine factory, event rendering
+├── agent/                   # Sub-agent orchestration, worktree management
 ├── context/                 # System prompt assembly + tool-use context
 ├── providers/               # LLM provider Protocol + OpenAI implementation
 ├── query_engine/            # Agent loop engine + state/event data models
+├── task/                    # Task queue, dependency tracking, completion events
 ├── tool_executor/           # Concurrent/sequential tool execution
 ├── tools/                   # Individual tool implementations
 └── tui/                     # Textual TUI (app, screens, widgets)
 
 tests/                       # Mirrors src/mini_cc/ structure
 ├── test_repl.py
+├── agent/
 ├── context/
 ├── query_engine/
+├── task/
 ├── tool_executor/
-└── tools/
+├── tools/
+└── tui/
 
 docs/                        # Design documents (in Chinese)
-├── Agent-Loop/              # Agent loop mechanism & streaming
-├── context/                 # System prompt injection
-├── memory/                  # Memory system (pure Markdown)
-├── security/                # Sandbox, Plan/Build modes
-└── tools/                   # Tool system design
 ```
 
 ## Build, Lint, and Test Commands
@@ -46,12 +46,12 @@ All commands use `uv run` to execute within the managed virtual environment.
 uv sync                                    # Install all dependencies
 
 # Lint & Format
-uv run ruff check .                        # Lint
+uv run ruff check .                        # Lint (excludes tests/)
 uv run ruff check . --fix                  # Lint with auto-fix
 uv run ruff format --check .               # Format check only
 uv run ruff format .                       # Format (write changes)
 
-# Type check
+# Type check (mypy strict; tests are excluded via pyproject.toml override)
 uv run mypy .
 
 # Tests
@@ -73,12 +73,12 @@ uv run pre-commit install --hook-type commit-msg
 
 - **Target Python version:** 3.11+
 - **Line length:** 120 characters
-- **Formatter:** `ruff format` (replaces Black)
+- **Formatter:** `ruff format` (Black-compatible)
 - **Every source file** starts with `from __future__ import annotations`
 
 ### Lint Rules (Ruff)
 
-Enabled in `pyproject.toml`: `E`, `F`, `I`, `W`, `N`, `UP`
+Enabled: `E`, `F`, `I`, `W`, `N`, `UP`. Note: ruff lint excludes `tests/**`.
 
 ### Imports
 
@@ -99,10 +99,10 @@ Enabled in `pyproject.toml`: `E`, `F`, `I`, `W`, `N`, `UP`
 
 ### Data Models
 
-- **Pydantic `BaseModel`** for API-serializable data with validation (`ToolCall`, `Message`, `QueryState`, `ToolResult`, tool input schemas).
+- **Pydantic `BaseModel`** for API-serializable data with validation (`ToolCall`, `Message`, `QueryState`, `Task`, tool input schemas).
 - **`@dataclass`** for internal/event types and tracking structs. Use `frozen=True` for immutable config.
-- **`StrEnum`** for enumeration types (e.g., `Role`).
-- **Plain classes** for stateful services (`QueryEngine`, `StreamingToolExecutor`).
+- **`StrEnum`** for enumeration types (e.g., `Role`, `AgentStatus`, `TaskStatus`).
+- **Plain classes** for stateful services (`QueryEngine`, `StreamingToolExecutor`, `TaskService`).
 
 ### Naming Conventions
 
@@ -130,17 +130,17 @@ Enabled in `pyproject.toml`: `E`, `F`, `I`, `W`, `N`, `UP`
 - UI-facing strings are in Chinese (tool descriptions, error messages, status bar).
 - Define `__all__` in every `__init__.py` for public modules.
 - No trailing whitespace; files end with a newline (pre-commit enforced).
+- Do not add comments unless explicitly requested.
 
 ## Testing Conventions
 
 - **Framework:** pytest with `pytest-asyncio` (async mode: `auto` in `pyproject.toml`).
 - **File naming:** `test_<module>.py` mirroring source structure.
 - **No `@pytest.mark.asyncio` decorator** needed — auto mode handles it.
-- **Test classes** group related scenarios: `TestToolResult`, `TestBaseTool`, `TestQueryEngineTextOnly`.
+- **Test classes** group related scenarios: `TestBash`, `TestBaseTool`, `TestQueryEngineTextOnly`.
 - **Assertions:** plain `assert` statements only — no `unittest` assert helpers.
-- **Fixtures:** use pytest `tmp_path` for filesystem tests. No `conftest.py` — helpers are local to each file with `_` prefix (`_DummyTool`, `_make_ctx`, `_noop_execute`).
+- **Fixtures:** use pytest `tmp_path` for filesystem tests. No `conftest.py` — helpers are local to each file with `_` prefix (`_DummyTool`, `_make_ctx`).
 - **Async test pattern:** `[e async for e in stream]` list comprehension.
-- **Console testing:** `Console(file=StringIO(), force_terminal=True, width=120)`.
 
 ## Commit Convention
 
@@ -153,15 +153,6 @@ Follows [Conventional Commits](https://www.conventionalcommits.org/):
 **Types:** `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `ci`
 
 Use `cz commit` for interactive generation. Non-compliant messages are rejected by the commit-msg hook.
-
-## Branch Naming
-
-| Type | Format | Example |
-|------|--------|---------|
-| Feature | `feat/<desc>` | `feat/multi-agent` |
-| Bug fix | `fix/<desc>` | `fix/token-expiry` |
-| Docs | `docs/<desc>` | `docs/api-reference` |
-| Refactor | `refactor/<desc>` | `refactor/cli-parser` |
 
 ## CI Pipeline
 
@@ -176,8 +167,8 @@ GitHub Actions runs on every push/PR to `main` with Python 3.11 and 3.12:
 
 ## Key Design Decisions
 
-- **Agent Loop:** Async streaming with event state machine (`TextDelta`, `ToolCallStart/Delta/End`, `ToolResultEvent`). See `docs/Agent-Loop/`.
+- **Agent Loop:** Async streaming with event state machine (`TextDelta`, `ToolCallStart/Delta/End`, `ToolResultEvent`). See `docs/agent-loop/`.
 - **Tool execution:** Safe tools (`file_read`, `glob`, `grep`) run concurrently; unsafe tools run sequentially. See `docs/tools/`.
 - **Context:** System prompt assembled from static markdown + dynamic env info + optional AGENTS.md. See `docs/context/`.
-- **Memory:** Pure Markdown files (no database). Four types: `user`, `feedback`, `project`, `reference`. See `docs/memory/`.
-- **Security:** Sandbox via `bubblewrap`. Two global modes — Plan (read-only) and Build (read-write). See `docs/security/`.
+- **Sub-agents:** `AgentManager` orchestrates `SubAgent` instances with git worktrees for isolation. See `src/mini_cc/agent/`.
+- **Task system:** `TaskService` manages task queues with dependency tracking and completion events. See `src/mini_cc/task/`.
