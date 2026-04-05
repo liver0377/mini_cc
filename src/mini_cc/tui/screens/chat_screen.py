@@ -8,6 +8,7 @@ from textual.binding import Binding
 from textual.screen import Screen
 
 from mini_cc.compression.compressor import compress_messages, replace_with_summary
+from mini_cc.context.engine_context import EngineContext
 from mini_cc.query_engine.state import (
     AgentCompletionNotificationEvent,
     AgentStartEvent,
@@ -22,7 +23,6 @@ from mini_cc.query_engine.state import (
     ToolCallStart,
     ToolResultEvent,
 )
-from mini_cc.repl import EngineContext
 from mini_cc.task.models import AgentCompletionEvent
 from mini_cc.tui.screens.agent_screen import AgentScreen
 from mini_cc.tui.widgets import ChatArea, InputArea, StatusBar

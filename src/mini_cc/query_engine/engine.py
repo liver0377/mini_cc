@@ -115,16 +115,21 @@ class QueryEngine:
             t0 = time.monotonic()
             turn_events: list[Event] = []
             try:
+                # 调用 LLM 流式推理，实时 yield 事件给 UI，同时收集到 turn_events
                 async for event in self._stream_fn(state.messages, schemas):
                     yield event
                     turn_events.append(event)
             except ContextLengthExceededError:
+                # 被动压缩：LLM API 因上下文超长拒绝请求时的补救措施
+                # has_attempted_reactive 确保最多补救一次，避免无限循环
                 if has_attempted_reactive:
                     raise
                 has_attempted_reactive = True
+                # 用 stream_fn 调一次 LLM 生成摘要，替换历史消息（保留 system message）
                 summary = await compress_messages(state.messages, self._stream_fn, self._model)
                 replace_with_summary(state, summary)
                 yield CompactOccurred(reason="reactive")
+                # 回到 while True 顶部，用压缩后的 messages 重新调 LLM
                 continue
 
             tool_calls = collect_tool_calls(turn_events)

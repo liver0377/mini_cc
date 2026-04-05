@@ -17,8 +17,9 @@ from rich.text import Text
 
 from mini_cc import __version__
 from mini_cc.compression.compressor import compress_messages, replace_with_summary
+from mini_cc.context.engine_context import EngineContext, create_engine
 from mini_cc.query_engine.state import Message, QueryState, Role
-from mini_cc.repl import EngineContext, create_engine, run_message
+from mini_cc.repl import run_message
 
 app = typer.Typer(
     name="mini-cc",

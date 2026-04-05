@@ -5,7 +5,7 @@ import asyncio
 from textual.app import App
 from textual.binding import Binding
 
-from mini_cc.repl import EngineContext
+from mini_cc.context.engine_context import EngineContext
 from mini_cc.tui.screens.chat_screen import ChatScreen
 
 
