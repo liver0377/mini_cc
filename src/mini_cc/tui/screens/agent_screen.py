@@ -11,6 +11,9 @@ from textual.widgets import Footer, Header, Static
 from mini_cc.agent.manager import AgentManager
 from mini_cc.agent.models import AgentStatus
 from mini_cc.agent.sub_agent import SubAgent
+from mini_cc.tui.theme import DEFAULT_THEME
+
+_T = DEFAULT_THEME
 
 _STATUS_ICONS: dict[AgentStatus, str] = {
     AgentStatus.CREATED: "⏳",
@@ -21,48 +24,59 @@ _STATUS_ICONS: dict[AgentStatus, str] = {
 }
 
 _STATUS_COLORS: dict[AgentStatus, str] = {
-    AgentStatus.CREATED: "yellow",
-    AgentStatus.RUNNING: "green",
-    AgentStatus.BACKGROUND_RUNNING: "cyan",
-    AgentStatus.COMPLETED: "dim",
-    AgentStatus.CANCELLED: "red",
+    AgentStatus.CREATED: "#d29922",
+    AgentStatus.RUNNING: "#238636",
+    AgentStatus.BACKGROUND_RUNNING: "#58a6ff",
+    AgentStatus.COMPLETED: "#484f58",
+    AgentStatus.CANCELLED: "#da3633",
 }
 
 
 class AgentScreen(Screen[None]):
-    DEFAULT_CSS = """
-    AgentScreen {
+    DEFAULT_CSS = f"""
+    AgentScreen {{
         layout: vertical;
-    }
-    AgentScreen #agent-list {
-        height: 1fr;
+        background: $surface;
+    }}
+    AgentScreen #agent-header {{
+        height: 1;
         width: 1fr;
         padding: 0 2;
+        background: {_T.status_bg};
+        color: $text;
+        content-align: left middle;
+    }}
+    AgentScreen #agent-list {{
+        height: 1fr;
+        width: 1fr;
+        padding: 1 2;
         overflow-y: auto;
         scrollbar-size: 1 1;
-    }
-    AgentScreen #agent-list .agent-row {
+    }}
+    AgentScreen #agent-list .agent-row {{
         padding: 1 2;
         margin: 0 0 1 0;
         width: 1fr;
-    }
-    AgentScreen #agent-list .agent-row:hover {
+    }}
+    AgentScreen #agent-list .agent-row:hover {{
         background: $boost;
-    }
-    AgentScreen #agent-list .agent-row.selected {
-        background: $primary;
-    }
-    AgentScreen #detail-area {
+    }}
+    AgentScreen #agent-list .agent-row.selected {{
+        background: {_T.tool_border};
+        border-left: tall {_T.spinner};
+    }}
+    AgentScreen #detail-area {{
         height: auto;
         max-height: 60%;
         width: 1fr;
-        padding: 0 2;
-        border-top: tall $primary;
+        padding: 1 2;
+        border-top: tall {_T.tool_border};
+        background: $boost;
         display: none;
-    }
-    AgentScreen #detail-area.visible {
+    }}
+    AgentScreen #detail-area.visible {{
         display: block;
-    }
+    }}
     """
 
     BINDINGS = [
@@ -83,8 +97,8 @@ class AgentScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         yield Header()
+        yield Static("  子 Agent 管理", id="agent-header")
         yield Vertical(
-            Static("子 Agent 列表", id="agent-list-title"),
             Static("", id="agent-list"),
             Static("", id="detail-area"),
         )
@@ -165,20 +179,18 @@ class AgentScreen(Screen[None]):
         for i, agent in enumerate(self._agents):
             icon = _STATUS_ICONS.get(agent.status, "?")
             color = _STATUS_COLORS.get(agent.status, "white")
-            selected = " ◀" if i == self._selected_idx else ""
+            selected_marker = " [dim]◀[/]" if i == self._selected_idx else ""
             prompt_preview = "(无消息)"
             if agent.state.messages:
                 last_msg = agent.state.messages[-1]
                 if last_msg.content:
                     prompt_preview = last_msg.content[:60]
             line = (
-                f"{'[bold]' if i == self._selected_idx else ''}"
-                f"{icon} [{color}]{agent.config.agent_id}[/]"
+                f"[{color}]{icon}[/] [bold #58a6ff]{agent.config.agent_id}[/]"
                 f"  [dim]Task #{agent.task_id}[/]"
                 f"  [{color}]{agent.status.value}[/]"
                 f"  [dim]{prompt_preview}[/]"
-                f"{'[/]' if i == self._selected_idx else ''}"
-                f"{selected}"
+                f"{selected_marker}"
             )
             lines.append(line)
 
@@ -193,7 +205,7 @@ class AgentScreen(Screen[None]):
         config = agent.config
 
         content_parts: list[str] = [
-            f"[bold]Agent {config.agent_id}[/]  [dim]Task #{agent.task_id}[/]",
+            f"[bold #58a6ff]Agent {config.agent_id}[/]  [dim]Task #{agent.task_id}[/]",
             f"  状态: {_STATUS_ICONS.get(agent.status, '?')} {agent.status.value}",
             f"  Worktree: {config.worktree_path}",
             f"  Fork: {'是' if config.is_fork else '否'}",

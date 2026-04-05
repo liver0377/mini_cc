@@ -25,6 +25,7 @@ from mini_cc.repl import EngineContext
 from mini_cc.task.models import AgentCompletionEvent
 from mini_cc.tui.screens.agent_screen import AgentScreen
 from mini_cc.tui.widgets import ChatArea, InputArea, StatusBar
+from mini_cc.tui.widgets.completion_popup import CompletionPopup
 from mini_cc.tui.widgets.input_area import InputArea as InputAreaType
 
 PLAN_MODE = "plan"
@@ -42,6 +43,7 @@ class ChatScreen(Screen[None]):
         Binding("tab", "toggle_mode", "Toggle Plan/Build", show=False),
         Binding("ctrl+a", "open_agent_screen", "Agent 管理", show=True),
         Binding("escape", "interrupt", "Interrupt", show=False),
+        Binding("ctrl+c", "exit_app", "退出", show=False),
     ]
 
     def __init__(self, engine_ctx: EngineContext) -> None:
@@ -60,12 +62,15 @@ class ChatScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         yield ChatArea()
+        yield CompletionPopup()
         yield InputArea()
         yield StatusBar()
 
     def on_mount(self) -> None:
         status = self.query_one(StatusBar)
         status.update_info(self._mode, self._engine_ctx.env_info.model_name)
+        popup = self.query_one(CompletionPopup)
+        popup.display = False
         self.query_one(InputAreaType).focus()
         self._spinner_task = asyncio.create_task(self._spinner_loop())
 
@@ -113,8 +118,24 @@ class ChatScreen(Screen[None]):
             self._state.messages.insert(0, Message(role=Role.SYSTEM, content=content))
 
     def _send_message(self, text: str) -> None:
-        if text.lower() in {"/exit", "/quit"}:
+        if text.lower() in {"/exit", "/exit ", "/quit", "/quit "}:
             self.app.exit()
+            return
+
+        if text.lower() == "/help":
+            asyncio.create_task(self._show_help())
+            return
+
+        if text.lower() == "/clear":
+            asyncio.create_task(self._clear_chat())
+            return
+
+        if text.lower() == "/mode":
+            self.action_toggle_mode()
+            return
+
+        if text.lower() == "/agents":
+            self.action_open_agent_screen()
             return
 
         if text.strip().lower() == "/compact":
@@ -128,6 +149,39 @@ class ChatScreen(Screen[None]):
         self._processing = True
         self._interrupt_event.clear()
         self._stream_task = asyncio.create_task(self._run_stream(text))
+
+    async def _show_help(self) -> None:
+        chat = self.query_one(ChatArea)
+        help_text = (
+            "[bold]可用命令:[/]\n"
+            "  [cyan]/help[/]    显示帮助信息\n"
+            "  [cyan]/compact[/] 压缩对话上下文\n"
+            "  [cyan]/clear[/]   清空聊天记录\n"
+            "  [cyan]/mode[/]    切换 Plan/Build 模式\n"
+            "  [cyan]/agents[/]  管理子 Agent\n"
+            "  [cyan]/exit[/]    退出程序\n\n"
+            "[bold]快捷键:[/]\n"
+            "  [dim]Tab[/]      切换 Plan/Build 模式\n"
+            "  [dim]Ctrl+A[/]   打开 Agent 管理界面\n"
+            "  [dim]Esc[/]      中断当前操作\n"
+            "  [dim]Shift+Enter[/] 换行\n\n"
+            "[bold]补全:[/]\n"
+            "  [dim]/[/]        输入 / 触发命令补全\n"
+            "  [dim]@[/]        输入 @ 触发文件路径补全\n"
+        )
+        await chat.add_system_message(help_text)
+        self.query_one(InputAreaType).focus()
+
+    async def _clear_chat(self) -> None:
+        chat = self.query_one(ChatArea)
+        await chat.clear_messages()
+        await chat.add_system_message("[dim]聊天记录已清空[/]")
+        self._state = QueryState(
+            messages=[
+                Message(role=Role.SYSTEM, content=self._engine_ctx.prompt_builder.build(self._engine_ctx.env_info))
+            ]
+        )
+        self.query_one(InputAreaType).focus()
 
     async def _run_compact(self) -> None:
         chat = self.query_one(ChatArea)

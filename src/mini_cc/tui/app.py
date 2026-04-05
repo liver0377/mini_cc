@@ -1,17 +1,33 @@
 from __future__ import annotations
 
 from textual.app import App
+from textual.binding import Binding
 
 from mini_cc.repl import EngineContext
 from mini_cc.tui.screens.chat_screen import ChatScreen
 
 
 class MiniCCApp(App[None]):
-    EXIT_ON_CTRL_C = True
+    BINDINGS = [
+        Binding("ctrl+c", "quit", "退出", show=False, priority=True),
+        Binding("ctrl+q", "quit", "退出", show=False, priority=True),
+    ]
+
     TITLE = "mini-cc"
+
     CSS = """
+    $user-bg: #1a1a2e;
+    $tool-bg: #0d1117;
+    $accent: #7c3aed;
+    $success: #238636;
+    $fail: #da3633;
+    $status-bg: #161b22;
+    $input-border: #30363d;
+    $input-focus: #58a6ff;
+
     Screen {
         layout: vertical;
+        background: $surface;
     }
     """
 

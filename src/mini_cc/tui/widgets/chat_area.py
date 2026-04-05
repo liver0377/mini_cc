@@ -4,67 +4,80 @@ from textual.containers import VerticalScroll
 from textual.widgets import Markdown, Static
 from textual.widgets._markdown import MarkdownStream
 
-_AGENT_COLORS = ["cyan", "magenta", "yellow", "green", "blue", "red"]
+from mini_cc.tui.theme import DEFAULT_THEME
+from mini_cc.tui.widgets.collapsible_tool import CollapsibleTool
+
+_T = DEFAULT_THEME
+
+_AGENT_COLORS = list(_T.agent_colors)
 
 
 class ChatArea(VerticalScroll):
-    DEFAULT_CSS = """
-    ChatArea {
+    DEFAULT_CSS = f"""
+    ChatArea {{
         height: 1fr;
         width: 1fr;
         overflow-y: auto;
         overflow-x: hidden;
-        padding: 0 1;
+        padding: 0 2;
         scrollbar-size: 1 1;
-    }
+        background: $surface;
+    }}
 
-    ChatArea .user-msg {
-        background: $boost;
+    ChatArea .user-msg {{
+        background: {_T.user_bg};
+        border-left: tall {_T.user_border};
         color: $text;
-        padding: 1 2;
-        margin: 1 0;
-        width: 1fr;
-    }
-
-    ChatArea .ai-msg {
         padding: 0 2;
         margin: 1 0;
         width: 1fr;
-    }
+    }}
 
-    ChatArea .tool-msg {
-        color: $text-muted;
+    ChatArea .ai-msg {{
+        padding: 0 2;
+        margin: 1 0;
+        width: 1fr;
+    }}
+
+    ChatArea .ai-label {{
+        color: {_T.assistant_label};
         padding: 0 2;
         margin: 0 0;
         width: 1fr;
-    }
+    }}
 
-    ChatArea .system-msg {
-        color: $text-muted;
+    ChatArea .tool-call-msg {{
         padding: 0 2;
         margin: 0 0;
         width: 1fr;
-    }
+    }}
 
-    ChatArea .agent-label {
+    ChatArea .system-msg {{
+        color: {_T.system_muted};
         padding: 0 2;
         margin: 0 0;
         width: 1fr;
-    }
+    }}
 
-    ChatArea .agent-msg {
-        color: $text-muted;
+    ChatArea .agent-msg {{
         padding: 0 2;
         margin: 0 0;
         width: 1fr;
-    }
+    }}
 
-    ChatArea .agent-tool-msg {
+    ChatArea .agent-tool-msg {{
         color: $text-muted;
         padding: 0 4;
         margin: 0 0;
         width: 1fr;
-    }
+    }}
+
+    ChatArea .done-marker {{
+        color: {_T.separator};
+        padding: 1 2;
+        margin: 0 0;
+        width: 1fr;
+    }}
     """
 
     def __init__(self) -> None:
@@ -79,12 +92,14 @@ class ChatArea(VerticalScroll):
         return self._agent_color_index[agent_id]
 
     async def add_user_message(self, text: str) -> None:
-        widget = Static(f"[bold green]❯[/] {text}", classes="user-msg", markup=True)
+        widget = Static(f"[bold {_T.user_accent}]❯[/] {text}", classes="user-msg", markup=True)
         await self.mount(widget)
         self.scroll_end(animate=False)
 
     async def begin_assistant_message(self) -> None:
+        label = Static("Assistant", classes="ai-label", markup=False)
         md = Markdown(classes="ai-msg")
+        await self.mount(label)
         await self.mount(md)
         self._current_stream = Markdown.get_stream(md)
         self.scroll_end(animate=False)
@@ -100,15 +115,17 @@ class ChatArea(VerticalScroll):
             self._current_stream = None
 
     async def add_tool_call(self, name: str) -> None:
-        widget = Static(f"  ⚙ [bold cyan]{name}[/]...", classes="tool-msg", markup=True)
+        widget = Static(
+            f"  ⚙ [#58a6ff]{name}[/][dim](...)[/]",
+            classes="tool-call-msg",
+            markup=True,
+        )
         await self.mount(widget)
         self.scroll_end(animate=False)
 
     async def add_tool_result(self, name: str, output: str, success: bool) -> None:
-        marker = "[bold green]✓[/]" if success else "[bold red]✗[/]"
-        preview = output[:200] + "..." if len(output) > 200 else output
-        widget = Static(f"  {marker} [cyan]{name}[/]: {preview}", classes="tool-msg", markup=True)
-        await self.mount(widget)
+        tool = CollapsibleTool(tool_name=name, output=output, success=success)
+        await self.mount(tool)
         self.scroll_end(animate=False)
 
     async def add_system_message(self, text: str) -> None:
@@ -129,7 +146,7 @@ class ChatArea(VerticalScroll):
     async def add_agent_tool_call(self, agent_id: str, tool_name: str) -> None:
         color = self._agent_color(agent_id)
         widget = Static(
-            f"    ⚙ [{color}]{agent_id}[/][dim] ▸ [/][bold cyan]{tool_name}[/][dim](...)[/]",
+            f"    ⚙ [{color}]{agent_id}[/][dim] ▸ [/][bold #58a6ff]{tool_name}[/][dim](...)[/]",
             classes="agent-tool-msg",
             markup=True,
         )
@@ -138,10 +155,10 @@ class ChatArea(VerticalScroll):
 
     async def add_agent_tool_result(self, agent_id: str, tool_name: str, success: bool, output_preview: str) -> None:
         color = self._agent_color(agent_id)
-        marker = "[bold green]✓[/]" if success else "[bold red]✗[/]"
-        preview = output_preview[:100] + "..." if len(output_preview) > 100 else output_preview
+        marker = f"[bold {_T.tool_success}]✓[/]" if success else f"[bold {_T.tool_fail}]✗[/]"
+        preview = output_preview[:100] + "…" if len(output_preview) > 100 else output_preview
         widget = Static(
-            f"    {marker} [{color}]{agent_id}[/][dim] ▸ [/][cyan]{tool_name}[/]: {preview}",
+            f"    {marker} [{color}]{agent_id}[/][dim] ▸ [/][#58a6ff]{tool_name}[/]: {preview}",
             classes="agent-tool-msg",
             markup=True,
         )
@@ -150,9 +167,9 @@ class ChatArea(VerticalScroll):
 
     async def add_agent_notification(self, *, agent_id: str, task_id: int, success: bool, output: str) -> None:
         color = self._agent_color(agent_id)
-        marker = "[bold green]✓[/]" if success else "[bold red]✗[/]"
+        marker = f"[bold {_T.tool_success}]✓[/]" if success else f"[bold {_T.tool_fail}]✗[/]"
         status_text = "完成" if success else "失败"
-        preview = output[:200] + ("..." if len(output) > 200 else "")
+        preview = output[:200] + ("…" if len(output) > 200 else "")
         widget = Static(
             f"  {marker} [bold {color}]子 Agent {agent_id}[/][dim] (Task #{task_id})[/] {status_text}\n"
             f"    [dim]{preview}[/]",
@@ -163,6 +180,10 @@ class ChatArea(VerticalScroll):
         self.scroll_end(animate=False)
 
     async def add_done_marker(self) -> None:
-        widget = Static("[dim]── 完成 ──[/]", classes="system-msg", markup=True)
+        widget = Static("───────────", classes="done-marker", markup=False)
         await self.mount(widget)
         self.scroll_end(animate=False)
+
+    async def clear_messages(self) -> None:
+        for child in list(self.children):
+            await child.remove()

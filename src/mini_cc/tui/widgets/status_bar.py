@@ -1,30 +1,65 @@
 from __future__ import annotations
 
+from textual.app import ComposeResult
+from textual.containers import Horizontal
 from textual.widgets import Static
+
+from mini_cc.tui.theme import DEFAULT_THEME
 
 _SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
+_T = DEFAULT_THEME
 
-class StatusBar(Static):
-    DEFAULT_CSS = """
-    StatusBar {
+
+class StatusBar(Horizontal):
+    DEFAULT_CSS = f"""
+    StatusBar {{
         dock: bottom;
         height: 1;
         width: 1fr;
-        background: $primary;
+        background: {_T.status_bg};
         color: $text;
         padding: 0 1;
-        content-align: left middle;
-    }
+    }}
+    StatusBar .status-sep {{
+        color: {_T.status_separator};
+        width: 1;
+    }}
+    StatusBar .status-mode {{
+        color: $text;
+        width: auto;
+    }}
+    StatusBar .status-model {{
+        color: $text-muted;
+        width: auto;
+    }}
+    StatusBar .status-activity {{
+        color: {_T.spinner};
+        width: auto;
+    }}
+    StatusBar .status-hints {{
+        color: $text-disabled;
+        dock: right;
+        width: auto;
+    }}
     """
 
     def __init__(self) -> None:
-        super().__init__("")
+        super().__init__()
         self._mode = "build"
         self._model = ""
         self._agent_count = 0
         self._main_thinking = False
         self._spinner_idx = 0
+
+    def compose(self) -> ComposeResult:
+        yield Static("", classes="status-mode", id="sb-mode")
+        yield Static("│", classes="status-sep")
+        yield Static("", classes="status-model", id="sb-model")
+        yield Static("│", classes="status-sep")
+        yield Static("", classes="status-activity", id="sb-activity")
+        yield Static("│", classes="status-sep")
+        yield Static("", classes="status-hints", id="sb-hints")
 
     def update_info(self, mode: str, model: str) -> None:
         self._mode = mode
@@ -48,17 +83,44 @@ class StatusBar(Static):
             self._spinner_idx = (self._spinner_idx + 1) % len(_SPINNER_FRAMES)
             self._refresh_display()
 
-    def _refresh_display(self) -> None:
-        mode_label = "[bold yellow]Plan[/] (只读)" if self._mode == "plan" else "[bold green]Build[/] (读写)"
-        model_label = self._model or "unknown"
+    def _build_display_text(self) -> str:
+        if self._mode == "plan":
+            mode_text = "[bold yellow]● Plan[/]"
+        else:
+            mode_text = f"[bold {_T.mode_build}]● Build[/]"
+
         spinner = _SPINNER_FRAMES[self._spinner_idx]
         parts: list[str] = []
         if self._main_thinking:
             parts.append(f"{spinner} 思考中")
         if self._agent_count > 0:
-            parts.append(f"{spinner} 子 Agent: {self._agent_count}")
-        status_part = f"  │  {'  '.join(parts)}" if parts else ""
-        self.update(
-            f" 模式: {mode_label}  │  模型: {model_label}{status_part}"
-            f"  │  Tab 切换模式  │  Esc 中断  │  Ctrl+A Agent管理"
-        )
+            parts.append(f"{spinner} Agent: {self._agent_count}")
+        activity_text = f" {'  '.join(parts)} " if parts else " "
+
+        return f" {mode_text}  │  {self._model or 'unknown'}{activity_text}  │  Esc 中断 │ Tab 模式 │ Ctrl+A Agent "
+
+    def _refresh_display(self) -> None:
+        if not self.is_mounted:
+            return
+
+        mode_w = self.query_one("#sb-mode", Static)
+        model_w = self.query_one("#sb-model", Static)
+        activity_w = self.query_one("#sb-activity", Static)
+        hints_w = self.query_one("#sb-hints", Static)
+
+        if self._mode == "plan":
+            mode_w.update("[bold yellow]● Plan[/]")
+        else:
+            mode_w.update(f"[bold {_T.mode_build}]● Build[/]")
+
+        model_w.update(f" {self._model or 'unknown'} ")
+
+        spinner = _SPINNER_FRAMES[self._spinner_idx]
+        parts: list[str] = []
+        if self._main_thinking:
+            parts.append(f"{spinner} 思考中")
+        if self._agent_count > 0:
+            parts.append(f"{spinner} Agent: {self._agent_count}")
+        activity_w.update(f" {'  '.join(parts)} " if parts else " ")
+
+        hints_w.update(" Esc 中断 │ Tab 模式 │ Ctrl+A Agent ")

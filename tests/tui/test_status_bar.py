@@ -30,33 +30,33 @@ class TestStatusBarDisplay:
     def test_build_mode_display(self):
         sb = StatusBar()
         sb.update_info("build", "GPT-4o")
-        rendered = str(sb.render())
+        rendered = sb._build_display_text()
         assert "Build" in rendered
 
     def test_plan_mode_display(self):
         sb = StatusBar()
         sb.update_info("plan", "GPT-4o")
-        rendered = str(sb.render())
+        rendered = sb._build_display_text()
         assert "Plan" in rendered
 
     def test_agent_count_shown_when_nonzero(self):
         sb = StatusBar()
         sb.update_info("build", "GPT-4o")
         sb.update_agent_count(2)
-        rendered = str(sb.render())
-        assert "子 Agent: 2" in rendered
+        rendered = sb._build_display_text()
+        assert "Agent: 2" in rendered
 
     def test_agent_count_hidden_when_zero(self):
         sb = StatusBar()
         sb.update_info("build", "GPT-4o")
         sb.update_agent_count(0)
-        rendered = str(sb.render())
-        assert "子 Agent" not in rendered
+        rendered = sb._build_display_text()
+        assert "Agent: 0" not in rendered
 
     def test_ctrl_a_hint_present(self):
         sb = StatusBar()
         sb.update_info("build", "test-model")
-        rendered = str(sb.render())
+        rendered = sb._build_display_text()
         assert "Ctrl+A" in rendered
 
 
@@ -76,14 +76,14 @@ class TestStatusBarMainThinking:
         sb = StatusBar()
         sb.update_info("build", "GPT-4o")
         sb.set_main_thinking(True)
-        rendered = str(sb.render())
+        rendered = sb._build_display_text()
         assert "思考中" in rendered
 
     def test_thinking_hidden_when_false(self):
         sb = StatusBar()
         sb.update_info("build", "GPT-4o")
         sb.set_main_thinking(False)
-        rendered = str(sb.render())
+        rendered = sb._build_display_text()
         assert "思考中" not in rendered
 
     def test_tick_spinner_advances_when_thinking(self):
