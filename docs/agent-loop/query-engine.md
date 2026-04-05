@@ -2,46 +2,71 @@
 
 ## 概述
 
-Query Engine 是 Mini Claude Code 的核心组件，负责管理用户与 LLM 之间的交互循环。它接收用户输入，组装上下文，驱动 LLM 流式推理，调度工具执行，并将结果实时推送给消费方（CLI）。
+Query Engine 是 Mini Claude Code 的核心组件，负责驱动 LLM 的多轮"思考-行动"循环。它接收已组装好的对话状态（包含 system prompt），流式调用 LLM，调度工具执行，并将事件实时推送给消费方（TUI / REPL）。
 
-QueryEngine 是一个**纯编排器**——它不直接依赖任何具体的 LLM Provider 或 Tool 实现。所有外部能力通过 `StreamFn`（流式回调）和 `ToolUseContext`（工具使用上下文）注入，实现完全解耦。
+QueryEngine 是一个**纯编排器**——它不负责 system prompt 拼装、斜杠命令解析等 UI 层职责。所有外部能力通过 `StreamFn`（流式回调）和 `ToolUseContext`（工具使用上下文）注入，实现完全解耦。
+
+### 职责划分
+
+| 职责 | 所在位置 | 说明 |
+|------|---------|------|
+| System prompt 拼装 | `context/system_prompt.py` | `SystemPromptBuilder.build()` 组装静态 prompt + 环境信息 + AGENTS.md + 记忆 |
+| System prompt 注入 | 调用层（TUI `ChatScreen`、CLI `chat()`、`AgentManager`） | 创建 `QueryState` 时作为 `messages[0]` 注入 |
+| 斜杠命令解析 | TUI: `ChatScreen._send_message()` / CLI: `cli.py` | `/help`、`/clear`、`/mode`、`/compact`、`/agents`、`/exit` |
+| Agent 循环驱动 | `query_engine/engine.py` | `QueryEngine._query_loop()` — 本模块 |
 
 ## 整体架构
 
 ```
-用户输入 "请修复这个 bug"
+用户输入 "请修复这个 bug"（斜杠命令已由 TUI/CLI 处理）
+       │
+       ▼
+┌─ 调用层（TUI ChatScreen / CLI chat / AgentManager）─────────┐
+│  1. SystemPromptBuilder.build() → 组装 system prompt         │
+│  2. QueryState(messages=[system_msg, ...])                    │
+│  3. engine.submit_message(prompt, state)                     │
+└──────────────────────────────────────────────────────────────┘
        │
        ▼
 ┌─ QueryEngine ───────────────────────────────────────────────┐
 │                                                              │
-│  submit_message(prompt) → AsyncGenerator[Event]              │
+│  submit_message(prompt, state) → AsyncGenerator[Event]      │
 │    │                                                         │
-│    ├── 1. 解析斜杠命令（占位）                                │
-│    ├── 2. 组装 system prompt（占位）                          │
-│    ├── 3. 追加用户消息到对话历史                               │
-│    └── 4. 进入 _query_loop()                                 │
+│    ├── 追加用户消息到 state.messages                          │
+│    └── 进入 _query_loop(state)                               │
 │          │                                                   │
 │          ▼  (思考-行动循环)                                   │
-│    ┌─ _query_loop() ────────────────────────────────┐        │
-│    │  while True:                                   │        │
-│    │    if ctx.is_interrupted: break                │        │
-│    │    schemas = ctx.get_tool_schemas()            │        │
-│    │    async for event in stream_fn(msgs, schemas): │        │
-│    │      yield event  ← 文本/工具事件实时推送        │        │
-│    │      收集 turn_events                          │        │
-│    │    tool_calls = collect_tool_calls(events)     │        │
-│    │    if 无 tool_calls:                           │        │
-│    │      break  ← 正常结束                         │        │
-│    │    权限检查 → 过滤 allowed tool_calls           │        │
-│    │    results = await ctx.execute(allowed)        │        │
-│    │    yield results                               │        │
-│    │    追加 assistant + tool messages 到 state      │        │
-│    └────────────────────────────────────────────────┘        │
+│    ┌─ _query_loop() ────────────────────────────────────┐    │
+│    │  while True:                                       │    │
+│    │    if ctx.is_interrupted: break                    │    │
+│    │    排空 completion_queue / agent_event_queue       │    │
+│    │    if should_auto_compact: 自动压缩 → yield Compact │    │
+│    │    schemas = ctx.get_tool_schemas()                │    │
+│    │    async for event in stream_fn(msgs, schemas):    │    │
+│    │      yield event  ← 文本/工具事件实时推送            │    │
+│    │      收集 turn_events                              │    │
+│    │    (若 ContextLengthExceeded: 被动压缩 → continue)  │    │
+│    │    tool_calls = collect_tool_calls(events)         │    │
+│    │    if 无 tool_calls:                               │    │
+│    │      break  ← 正常结束                              │    │
+│    │    权限检查 → 过滤 allowed tool_calls               │    │
+│    │    async for result in ctx.execute(allowed):       │    │
+│    │      排空 agent_event_queue                        │    │
+│    │      yield result                                  │    │
+│    │    追加 assistant + tool messages 到 state          │    │
+│    │    记录 TurnRecord（耗时/工具摘要）                  │    │
+│    │    await post_turn_hook(state)                     │    │
+│    │                                                    │    │
+│    │  退出后排空剩余 completion / agent 事件              │    │
+│    └────────────────────────────────────────────────────┘    │
 │                                                              │
 │  依赖注入：                                                   │
 │    stream_fn: StreamFn       ← 外部注入的 LLM 流式回调       │
 │    tool_use_ctx: ToolUseContext ← 工具上下文（schemas + 执行  │
 │                                   + 权限 + 中断 + 追踪）      │
+│    completion_queue          ← 子 agent 完成通知队列          │
+│    agent_event_queue         ← 子 agent 实时事件队列          │
+│    post_turn_hook            ← 每轮结束后的回调（memory 等）  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -81,7 +106,13 @@ LLM 流式响应中的每个 chunk 被转换为以下 Event 类型：
 | `ToolCallStart` | 工具调用开始，携带 id 和工具名 | `delta.tool_calls[i].function.name` 有值 |
 | `ToolCallDelta` | 工具参数的增量 JSON 片段 | `delta.tool_calls[i].function.arguments` 有值 |
 | `ToolCallEnd` | 该工具调用的流式输出结束 | `choice.finish_reason == "tool_calls"` |
-| `ToolResultEvent` | 工具执行完毕后的结果 | 由 ToolUseContext.execute 产生 |
+| `ToolResultEvent` | 工具执行完毕后的结果 | 由 `StreamingToolExecutor.run` 产生 |
+| `CompactOccurred` | 上下文压缩已发生 | `_query_loop` 中自动/被动压缩后 |
+| `AgentStartEvent` | 子 agent 开始执行 | 后台 readonly agent 启动时 |
+| `AgentTextDeltaEvent` | 子 agent 的文本输出片段 | 子 agent 流式输出中 |
+| `AgentToolCallEvent` | 子 agent 调用了工具 | 子 agent 的工具执行前 |
+| `AgentToolResultEvent` | 子 agent 工具执行结果 | 子 agent 的工具执行后 |
+| `AgentCompletionNotificationEvent` | 子 agent 完成通知 | 从 `completion_queue` 中排空时 |
 
 ```python
 @dataclass
@@ -109,7 +140,54 @@ class ToolResultEvent:
     output: str
     success: bool
 
-Event = TextDelta | ToolCallStart | ToolCallDelta | ToolCallEnd | ToolResultEvent
+@dataclass
+class CompactOccurred:
+    reason: str  # "auto" | "reactive"
+
+@dataclass
+class AgentStartEvent:
+    agent_id: str
+    task_id: int
+    prompt: str
+
+@dataclass
+class AgentTextDeltaEvent:
+    agent_id: str
+    content: str
+
+@dataclass
+class AgentToolCallEvent:
+    agent_id: str
+    tool_name: str
+
+@dataclass
+class AgentToolResultEvent:
+    agent_id: str
+    tool_name: str
+    success: bool
+    output_preview: str
+
+@dataclass
+class AgentCompletionNotificationEvent:
+    agent_id: str
+    task_id: int
+    success: bool
+    output: str
+    output_path: str
+
+Event = (
+    TextDelta
+    | ToolCallStart
+    | ToolCallDelta
+    | ToolCallEnd
+    | ToolResultEvent
+    | CompactOccurred
+    | AgentStartEvent
+    | AgentTextDeltaEvent
+    | AgentToolCallEvent
+    | AgentToolResultEvent
+    | AgentCompletionNotificationEvent
+)
 ```
 
 #### 流式 chunk 到 Event 的映射
@@ -206,24 +284,54 @@ StreamFn = Callable[
     AsyncGenerator[Event, None],
 ]
 
+PostTurnHook = Callable[[QueryState], Awaitable[None]]
+
 
 class QueryEngine:
-    def __init__(self, stream_fn: StreamFn, tool_use_ctx: ToolUseContext) -> None: ...
+    def __init__(
+        self,
+        stream_fn: StreamFn,
+        tool_use_ctx: ToolUseContext,
+        completion_queue: asyncio.Queue[AgentCompletionEvent] | None = None,
+        agent_event_queue: asyncio.Queue[Event] | None = None,
+        post_turn_hook: PostTurnHook | None = None,
+        model: str = "",
+    ) -> None: ...
     
-    async def submit_message(self, prompt: str) -> AsyncGenerator[Event, None]:
-        # 1. 占位：解析斜杠命令
-        # 2. 占位：组装 system prompt
-        # 3. 追加用户消息
-        # 4. yield from _query_loop(state)
+    async def submit_message(
+        self, prompt: str, state: QueryState | None = None,
+    ) -> AsyncGenerator[Event, None]:
+        # 1. 若 state 为 None，创建新 QueryState
+        # 2. 追加用户消息到 state.messages
+        # 3. yield from _query_loop(state)
 
     async def _query_loop(self, state: QueryState) -> AsyncGenerator[Event, None]:
-        # 无限思考-行动循环，依赖注入
+        # while True:
+        #   中断检查
+        #   排空 completion_queue / agent_event_queue
+        #   自动压缩检查（should_auto_compact）
+        #   调用 stream_fn 流式推理 → yield 事件
+        #   被动压缩（ContextLengthExceeded 时）
+        #   collect_tool_calls → 权限检查 → 执行工具
+        #   追加 assistant + tool messages 到 state
+        #   记录 TurnRecord → post_turn_hook
+        # 退出后排空剩余队列事件
 ```
 
 ### 外部组装示例
 
 ```python
-# 在应用入口组装所有依赖
+# 在应用入口（TUI ChatScreen / CLI chat / AgentManager）组装所有依赖
+
+# 1. 组装 system prompt（由调用层负责，不在 QueryEngine 中）
+from mini_cc.context.system_prompt import SystemPromptBuilder
+prompt_builder = SystemPromptBuilder()
+system_content = prompt_builder.build(env_info, mode="build")
+
+# 2. 创建对话状态，system prompt 作为 messages[0]
+state = QueryState(messages=[Message(role=Role.SYSTEM, content=system_content)])
+
+# 3. 组装依赖
 provider = OpenAIProvider(model="...", base_url="...", api_key="...")
 registry = create_default_registry()
 executor = StreamingToolExecutor(registry)
@@ -231,13 +339,14 @@ executor = StreamingToolExecutor(registry)
 tool_use_ctx = ToolUseContext(
     get_schemas=registry.to_api_format,
     execute=executor.run,
-    check_permission=lambda name: name in allowed_tools,  # Plan/Build mode
+    check_permission=lambda name: name in allowed_tools,
     is_interrupted=lambda: shutdown_event.is_set(),
 )
 
 engine = QueryEngine(stream_fn=provider.stream, tool_use_ctx=tool_use_ctx)
 
-async for event in engine.submit_message(user_input):
+# 4. 斜杠命令由 UI 层处理，普通消息才进入 engine
+async for event in engine.submit_message(user_input, state):
     handle(event)
 ```
 
@@ -315,6 +424,7 @@ OPENAI_MODEL=glm-4-plus
 src/mini_cc/
 ├── context/
 │   ├── __init__.py
+│   ├── system_prompt.py        # SystemPromptBuilder（静态 prompt + 环境信息 + AGENTS.md + 记忆）
 │   └── tool_use.py             # ToolUseContext（Callable 注入）
 ├── query_engine/
 │   ├── __init__.py             # 导出 state 中的类型（不导入 engine，避免循环依赖）
@@ -327,6 +437,10 @@ src/mini_cc/
 │   ├── __init__.py
 │   ├── base.py                 # LLMProvider Protocol
 │   └── openai.py               # OpenAIProvider
+├── compression/
+│   └── compressor.py           # compress_messages, should_auto_compact, replace_with_summary
+├── task/
+│   └── models.py               # AgentCompletionEvent
 └── tools/
     ├── base.py                 # BaseTool, ToolRegistry
     └── ...
@@ -336,12 +450,16 @@ src/mini_cc/
 
 ```
 providers/openai.py ──→ query_engine/state.py ←── context/tool_use.py
-                                                          ↑
-query_engine/engine.py ──→ context/tool_use.py            │
-                  └─────→ query_engine/state.py           │
-                                                          │
-tool_executor/executor.py ──→ query_engine/state.py ──────┘
-                 └─────────→ tools/base.py
+                                                           ↑
+query_engine/engine.py ──→ context/tool_use.py             │
+                  ├────→ query_engine/state.py             │
+                  ├────→ compression/compressor.py         │
+                  └────→ task/models.py                    │
+                                                           │
+tool_executor/executor.py ──→ query_engine/state.py ───────┤
+                  └─────────→ tools/base.py                │
+                                                           │
+context/system_prompt.py ──→ query_engine/state.py ────────┘
 ```
 
-无循环依赖。`context/tool_use.py` 只依赖 `query_engine/state.py`（纯类型模块），不依赖 `query_engine/engine.py`。
+无循环依赖。`context/tool_use.py` 只依赖 `query_engine/state.py`（纯类型模块），不依赖 `query_engine/engine.py`。`query_engine/engine.py` 通过 `compression/compressor.py` 实现上下文压缩，通过 `task/models.py` 的 `AgentCompletionEvent` 处理子 agent 完成通知。

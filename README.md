@@ -35,6 +35,7 @@ Mini Claude Code aims to build a lightweight, extensible command-line coding age
 - [ ] Slash commands
 - [x] Context compression
 - [ ] Sandbox
+- [ ] Streaming tool dispatch: execute each tool call as soon as it completes in the LLM stream, without waiting for the full response
 
 ## Codebase
 

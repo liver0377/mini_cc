@@ -41,4 +41,6 @@ uv.lock
 
 # eval
 scripts/
+results/
+logs/
 
