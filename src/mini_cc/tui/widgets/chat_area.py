@@ -5,6 +5,7 @@ from textual.widgets import Markdown, Static
 from textual.widgets._markdown import MarkdownStream
 
 from mini_cc.tui.theme import DEFAULT_THEME
+from mini_cc.tui.widgets.agent_tool_strip import AgentToolStrip
 from mini_cc.tui.widgets.collapsible_tool import CollapsibleTool
 
 _T = DEFAULT_THEME
@@ -65,13 +66,6 @@ class ChatArea(VerticalScroll):
         width: 1fr;
     }}
 
-    ChatArea .agent-tool-msg {{
-        color: $text-muted;
-        padding: 0 4;
-        margin: 0 0;
-        width: 1fr;
-    }}
-
     ChatArea .done-marker {{
         color: {_T.separator};
         padding: 1 2;
@@ -84,6 +78,7 @@ class ChatArea(VerticalScroll):
         super().__init__()
         self._current_stream: MarkdownStream | None = None
         self._agent_color_index: dict[str, str] = {}
+        self._agent_strips: dict[str, AgentToolStrip] = {}
 
     def _agent_color(self, agent_id: str) -> str:
         if agent_id not in self._agent_color_index:
@@ -141,31 +136,28 @@ class ChatArea(VerticalScroll):
             markup=True,
         )
         await self.mount(widget)
+        strip = AgentToolStrip(agent_id, color)
+        await self.mount(strip)
+        self._agent_strips[agent_id] = strip
         self.scroll_end(animate=False)
 
     async def add_agent_tool_call(self, agent_id: str, tool_name: str) -> None:
-        color = self._agent_color(agent_id)
-        widget = Static(
-            f"    ⚙ [{color}]{agent_id}[/][dim] ▸ [/][bold #58a6ff]{tool_name}[/][dim](...)[/]",
-            classes="agent-tool-msg",
-            markup=True,
-        )
-        await self.mount(widget)
+        strip = self._agent_strips.get(agent_id)
+        if strip is not None:
+            strip.add_tool(tool_name)
         self.scroll_end(animate=False)
 
     async def add_agent_tool_result(self, agent_id: str, tool_name: str, success: bool, output_preview: str) -> None:
-        color = self._agent_color(agent_id)
-        marker = f"[bold {_T.tool_success}]✓[/]" if success else f"[bold {_T.tool_fail}]✗[/]"
-        preview = output_preview[:100] + "…" if len(output_preview) > 100 else output_preview
-        widget = Static(
-            f"    {marker} [{color}]{agent_id}[/][dim] ▸ [/][#58a6ff]{tool_name}[/]: {preview}",
-            classes="agent-tool-msg",
-            markup=True,
-        )
-        await self.mount(widget)
+        strip = self._agent_strips.get(agent_id)
+        if strip is not None:
+            strip.complete_tool(tool_name, success, output_preview)
         self.scroll_end(animate=False)
 
     async def add_agent_notification(self, *, agent_id: str, task_id: int, success: bool, output: str) -> None:
+        strip = self._agent_strips.pop(agent_id, None)
+        if strip is not None:
+            strip.finalize()
+
         color = self._agent_color(agent_id)
         marker = f"[bold {_T.tool_success}]✓[/]" if success else f"[bold {_T.tool_fail}]✗[/]"
         status_text = "完成" if success else "失败"
@@ -185,5 +177,6 @@ class ChatArea(VerticalScroll):
         self.scroll_end(animate=False)
 
     async def clear_messages(self) -> None:
+        self._agent_strips.clear()
         for child in list(self.children):
             await child.remove()
