@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from rich.markup import escape
 from textual.containers import VerticalScroll
 from textual.widgets import Markdown, Static
 from textual.widgets._markdown import MarkdownStream
@@ -87,7 +88,7 @@ class ChatArea(VerticalScroll):
         return self._agent_color_index[agent_id]
 
     async def add_user_message(self, text: str) -> None:
-        widget = Static(f"[bold {_T.user_accent}]❯[/] {text}", classes="user-msg", markup=True)
+        widget = Static(f"[bold {_T.user_accent}]❯[/] {escape(text)}", classes="user-msg", markup=True)
         await self.mount(widget)
         self.scroll_end(animate=False)
 
@@ -131,7 +132,7 @@ class ChatArea(VerticalScroll):
     async def add_agent_start(self, agent_id: str, task_id: int, prompt: str) -> None:
         color = self._agent_color(agent_id)
         widget = Static(
-            f"  🤖 [bold {color}]子 Agent {agent_id}[/][dim] (Task #{task_id})[/] 启动\n    [dim]{prompt}[/]",
+            f"  🤖 [bold {color}]子 Agent {agent_id}[/][dim] (Task #{task_id})[/] 启动\n    [dim]{escape(prompt)}[/]",
             classes="agent-msg",
             markup=True,
         )
@@ -161,7 +162,7 @@ class ChatArea(VerticalScroll):
         color = self._agent_color(agent_id)
         marker = f"[bold {_T.tool_success}]✓[/]" if success else f"[bold {_T.tool_fail}]✗[/]"
         status_text = "完成" if success else "失败"
-        preview = output[:200] + ("…" if len(output) > 200 else "")
+        preview = escape(output[:200] + ("…" if len(output) > 200 else ""))
         widget = Static(
             f"  {marker} [bold {color}]子 Agent {agent_id}[/][dim] (Task #{task_id})[/] {status_text}\n"
             f"    [dim]{preview}[/]",

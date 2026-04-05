@@ -45,6 +45,7 @@ class QueryEngine:
         agent_event_queue: asyncio.Queue[Event] | None = None,
         post_turn_hook: PostTurnHook | None = None,
         model: str = "",
+        active_agents_fn: Callable[[], int] | None = None,
     ) -> None:
         self._stream_fn = stream_fn
         self._tool_use_ctx = tool_use_ctx
@@ -52,6 +53,7 @@ class QueryEngine:
         self._agent_event_queue = agent_event_queue
         self._post_turn_hook = post_turn_hook
         self._model = model
+        self._active_agents_fn = active_agents_fn
         self.state: QueryState | None = None
 
     async def submit_message(self, prompt: str, state: QueryState | None = None) -> AsyncGenerator[Event, None]:
@@ -127,6 +129,24 @@ class QueryEngine:
 
             tool_calls = collect_tool_calls(turn_events)
             if not tool_calls:
+                assistant_content = _extract_text_content(turn_events)
+
+                if self._should_wait_for_agents():
+                    state.messages.append(Message(role=Role.ASSISTANT, content=assistant_content))
+
+                    async for event in self._drain_agent_events():
+                        yield event
+
+                    completions = await self._collect_all_completions()
+                    for evt in completions:
+                        yield evt
+
+                    if completions:
+                        summary = _build_agent_summary(completions)
+                        state.messages.append(Message(role=Role.USER, content=summary))
+                        has_attempted_reactive = False
+                        continue
+
                 break
 
             allowed: list[ToolCall] = []
@@ -146,11 +166,15 @@ class QueryEngine:
 
             tool_results: list[ToolResultEvent] = []
             async for result in self._tool_use_ctx.execute(allowed):
+                # 每执行完一个 tool 后排空 agent_event_queue，确保后台 readonly sub-agent
+                # 的实时事件（工具调用/结果）不会因主循环长时间占用而饥饿，
+                # 从而在 UI 上实现主 agent 与子 agent 事件的交错展示。
                 async for event in self._drain_agent_events():
                     yield event
                 yield result
                 tool_results.append(result)
 
+            # 兜底排空，防止最后一批后台事件丢失
             async for event in self._drain_agent_events():
                 yield event
 
@@ -199,6 +223,41 @@ class QueryEngine:
             yield notification
         async for event in self._drain_agent_events():
             yield event
+
+    def _should_wait_for_agents(self) -> bool:
+        return (
+            self._completion_queue is not None and self._active_agents_fn is not None and self._active_agents_fn() > 0
+        )
+
+    async def _collect_all_completions(self) -> list[AgentCompletionEvent]:
+        assert self._completion_queue is not None
+        assert self._active_agents_fn is not None
+
+        completions: list[AgentCompletionEvent] = []
+        async for evt in self._drain_completions():
+            completions.append(evt)
+
+        while self._active_agents_fn() > 0:
+            if self._tool_use_ctx.is_interrupted:
+                break
+            try:
+                evt = await asyncio.wait_for(self._completion_queue.get(), timeout=1.0)
+            except TimeoutError:
+                continue
+            completions.append(evt)
+            async for event in self._drain_agent_events():
+                pass
+
+        return completions
+
+
+def _build_agent_summary(completions: list[AgentCompletionEvent]) -> str:
+    summary_parts: list[str] = []
+    for c in completions:
+        status_label = "成功" if c.success else "失败"
+        summary_parts.append(f"## 子 Agent {c.agent_id} (Task #{c.task_id}) - {status_label}\n\n{c.output}")
+    summary = "\n\n---\n\n".join(summary_parts)
+    return f"以下是之前启动的后台只读子 Agent 的完成结果。\n请基于这些结果，继续回复用户的原始问题。\n\n{summary}"
 
 
 def _extract_text_content(events: list[Event]) -> str:

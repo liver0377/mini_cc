@@ -35,14 +35,14 @@ class AgentTool(BaseTool):
         manager: AgentManager,
         get_parent_state: Callable[[], QueryState],
         default_timeout: int = 120,
-        event_queue: asyncio.Queue[Event] | None = None,
         get_mode: Callable[[], str] | None = None,
+        event_queue: asyncio.Queue[Event] | None = None,
     ) -> None:
         self._manager = manager
         self._get_parent_state = get_parent_state
         self._default_timeout = default_timeout
-        self._event_queue = event_queue
         self._get_mode = get_mode
+        self._event_queue = event_queue
 
     @property
     def name(self) -> str:
@@ -130,8 +130,5 @@ class AgentTool(BaseTool):
         return ToolResult(output="".join(output_parts))
 
     async def _execute_readonly(self, agent: Any, prompt: str) -> ToolResult:
-        await self._emit_event(
-            AgentStartEvent(agent_id=agent.config.agent_id, task_id=agent.task_id, prompt=prompt[:80])
-        )
         asyncio.create_task(agent.run_background(prompt))
         return ToolResult(output=f"只读子 Agent {agent.config.agent_id} 已启动，任务 ID: {agent.task_id}")

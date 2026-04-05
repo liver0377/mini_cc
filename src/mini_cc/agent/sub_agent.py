@@ -8,10 +8,16 @@ from typing import TYPE_CHECKING
 from mini_cc.models import (
     AgentCompletionEvent,
     AgentConfig,
+    AgentStartEvent,
     AgentStatus,
+    AgentTextDeltaEvent,
+    AgentToolCallEvent,
+    AgentToolResultEvent,
     Event,
     QueryState,
     TextDelta,
+    ToolCallStart,
+    ToolResultEvent,
 )
 from mini_cc.query_engine.engine import QueryEngine
 from mini_cc.task.service import TaskService
@@ -31,6 +37,7 @@ class SubAgent:
         completion_queue: asyncio.Queue[AgentCompletionEvent],
         output_dir: Path,
         snapshot_svc: SnapshotService | None = None,
+        event_queue: asyncio.Queue[Event] | None = None,
     ) -> None:
         self._config = config
         self._engine = engine
@@ -40,6 +47,7 @@ class SubAgent:
         self._completion_queue = completion_queue
         self._output_dir = output_dir
         self.snapshot_svc = snapshot_svc
+        self._event_queue = event_queue
         self._status = AgentStatus.CREATED
         self._cancel_event = asyncio.Event()
         self._collected_output: list[str] = []
@@ -81,6 +89,9 @@ class SubAgent:
     async def run_background(self, prompt: str) -> None:
         self._status = AgentStatus.BACKGROUND_RUNNING
         await self._task_service.claim(self._task_id, owner=f"agent-{self._config.agent_id}")
+        await self._emit_event(
+            AgentStartEvent(agent_id=self._config.agent_id, task_id=self._task_id, prompt=prompt[:80])
+        )
 
         try:
             async for event in self._engine.submit_message(prompt, self._state):
@@ -89,13 +100,33 @@ class SubAgent:
                     await self._task_service.cancel(self._task_id)
                     return
                 self._collect_text(event)
-
+                self._forward_event(event)
             await self._finish(success=True)
         except Exception as e:
             await self._finish(success=False, error=str(e))
 
     def cancel(self) -> None:
         self._cancel_event.set()
+
+    async def _emit_event(self, event: Event) -> None:
+        if self._event_queue is not None:
+            await self._event_queue.put(event)
+
+    def _forward_event(self, event: Event) -> None:
+        if self._event_queue is None:
+            return
+        agent_id = self._config.agent_id
+        if isinstance(event, ToolCallStart):
+            self._event_queue.put_nowait(AgentToolCallEvent(agent_id=agent_id, tool_name=event.name))
+        elif isinstance(event, ToolResultEvent):
+            preview = event.output[:100] + ("..." if len(event.output) > 100 else "")
+            self._event_queue.put_nowait(
+                AgentToolResultEvent(
+                    agent_id=agent_id, tool_name=event.name, success=event.success, output_preview=preview
+                )
+            )
+        elif isinstance(event, TextDelta):
+            self._event_queue.put_nowait(AgentTextDeltaEvent(agent_id=agent_id, content=event.content))
 
     def _collect_text(self, event: Event) -> None:
         if isinstance(event, TextDelta):

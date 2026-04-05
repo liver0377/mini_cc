@@ -10,6 +10,7 @@ from mini_cc.memory.store import load_memory_index
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 _STATIC_FILES = ("intro.md", "rules.md", "caution.md", "tool_guide.md")
+_SUB_STATIC_FILES = ("intro_sub.md", "rules_sub.md", "caution.md", "tool_guide_sub.md")
 _AGENTS_MD = "AGENTS.md"
 
 
@@ -65,9 +66,9 @@ def _display_model_name(model: str) -> str:
     return known.get(model, model)
 
 
-def _load_static_prompts() -> list[str]:
+def _load_static_prompts(files: tuple[str, ...] = _STATIC_FILES) -> list[str]:
     parts: list[str] = []
-    for filename in _STATIC_FILES:
+    for filename in files:
         path = _PROMPTS_DIR / filename
         text = path.read_text(encoding="utf-8").strip()
         if text:
@@ -101,9 +102,24 @@ def _format_env_section(env: EnvInfo, mode: str) -> str:
 class SystemPromptBuilder:
     def __init__(self) -> None:
         self._static_parts: list[str] = _load_static_prompts()
+        self._static_sub_parts: list[str] = _load_static_prompts(_SUB_STATIC_FILES)
 
     def build(self, env: EnvInfo, mode: str = "build") -> str:
         parts = list(self._static_parts)
+        parts.append(_format_env_section(env, mode))
+
+        agents_md = _read_agents_md(env.working_directory)
+        if agents_md:
+            parts.append(agents_md)
+
+        memory_index = load_memory_index(Path(env.working_directory))
+        if memory_index:
+            parts.append(memory_index)
+
+        return "\n\n".join(parts)
+
+    def build_for_sub_agent(self, env: EnvInfo, mode: str = "build") -> str:
+        parts = list(self._static_sub_parts)
         parts.append(_format_env_section(env, mode))
 
         agents_md = _read_agents_md(env.working_directory)

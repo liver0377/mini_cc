@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
@@ -226,7 +227,7 @@ class ChatScreen(Screen[None]):
             replace_with_summary(self._state, summary)
             await chat.add_system_message("[dim]（对话已手动压缩）[/]")
         except Exception as e:
-            await chat.add_system_message(f"[bold red]压缩失败: {e}[/]")
+            await chat.add_system_message(f"[bold red]压缩失败: {escape(str(e))}[/]")
         finally:
             status.set_main_thinking(False)
             self._processing = False
@@ -257,16 +258,11 @@ class ChatScreen(Screen[None]):
 
             if not interrupted:
                 self._interrupt_event.clear()
-                completion_results = await self._poll_remaining_completions(chat)
-
-                if completion_results:
-                    await self._submit_agent_results(completion_results, chat, status)
-                else:
-                    await chat.add_done_marker()
+                await chat.add_done_marker()
 
         except Exception as e:
             await chat.end_assistant_message()
-            await chat.add_system_message(f"[bold red]错误: {e}[/]")
+            await chat.add_system_message(f"[bold red]错误: {escape(str(e))}[/]")
         finally:
             status.set_main_thinking(False)
             self._processing = False
@@ -314,74 +310,6 @@ class ChatScreen(Screen[None]):
             await chat.end_assistant_message()
             await chat.add_system_message(f"[dim]（{label}）[/]")
             await chat.begin_assistant_message()
-
-    async def _poll_remaining_completions(self, chat: ChatArea) -> list[AgentCompletionEvent]:
-        completion_queue = self._engine_ctx.completion_queue
-        if completion_queue is None:
-            return []
-        remaining = self._engine_ctx.active_agent_count
-        if remaining == 0:
-            return []
-
-        await chat.add_system_message(f"[dim]等待 {remaining} 个后台子 Agent 完成... (Esc 跳过等待)[/]")
-        self._notify_spinner()
-
-        results: list[AgentCompletionEvent] = []
-        try:
-            while self._engine_ctx.active_agent_count > 0:
-                if self._interrupt_event.is_set():
-                    break
-                try:
-                    evt = await asyncio.wait_for(completion_queue.get(), timeout=1.0)
-                except TimeoutError:
-                    continue
-
-                results.append(evt)
-                await chat.add_agent_notification(
-                    agent_id=evt.agent_id,
-                    task_id=evt.task_id,
-                    success=evt.success,
-                    output=evt.output,
-                )
-                self._refresh_agent_count()
-        finally:
-            self._interrupt_event.clear()
-        return results
-
-    async def _submit_agent_results(
-        self,
-        results: list[AgentCompletionEvent],
-        chat: ChatArea,
-        status: StatusBar,
-    ) -> None:
-        status.set_main_thinking(True)
-        self._notify_spinner()
-        summary_parts: list[str] = []
-        for r in results:
-            status_label = "成功" if r.success else "失败"
-            summary_parts.append(f"## 子 Agent {r.agent_id} (Task #{r.task_id}) - {status_label}\n\n{r.output}")
-        summary = "\n\n---\n\n".join(summary_parts)
-
-        await chat.add_system_message("[dim]子 Agent 全部完成，正在汇总结果...[/]")
-
-        result_prompt = (
-            f"以下是之前启动的后台只读子 Agent 的完成结果。\n请基于这些结果，继续回复用户的原始问题。\n\n{summary}"
-        )
-
-        await chat.begin_assistant_message()
-        try:
-            async for event in self._engine_ctx.engine.submit_message(result_prompt, self._state):
-                if self._interrupt_event.is_set():
-                    await chat.end_assistant_message()
-                    await chat.add_system_message("[dim]（已中断）[/]")
-                    return
-                await self._handle_event(event, chat)
-            await chat.end_assistant_message()
-        except Exception:
-            await chat.end_assistant_message()
-
-        self._refresh_agent_count()
-        await chat.add_done_marker()
 
     def _refresh_agent_count(self) -> None:
         count = self._engine_ctx.active_agent_count

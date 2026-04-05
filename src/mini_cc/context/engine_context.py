@@ -150,6 +150,7 @@ def create_engine(
         stream_fn=provider.stream,
         task_service=task_service,
         completion_queue=completion_queue,
+        agent_event_queue=agent_event_queue,
         prompt_builder=prompt_builder,
         env_info=env_info,
     )
@@ -163,6 +164,8 @@ def create_engine(
         model=config.model,
     )
     ctx_ref.append(engine_ctx)
+
+    engine._active_agents_fn = lambda: ctx_ref[0].active_agent_count if ctx_ref else 0
 
     agent_tool = AgentTool(
         manager=agent_manager,

@@ -80,10 +80,10 @@ class AgentToolStrip(Static):
             if tool.status == "running":
                 icon = "⚡" if self._blink_on else "·"
                 color = _RUNNING_BRIGHT if self._blink_on else _RUNNING_DIM
-                parts.append(f"[{color}]{icon} {_TOOL_NAME_COLOR}{tool.name}[/]")
+                parts.append(f"[{color}]{icon}[/{color}] [{_TOOL_NAME_COLOR}]{tool.name}[/]")
             else:
                 marker = f"[bold {_SUCCESS}]✓[/]" if tool.success else f"[bold {_FAIL}]✗[/]"
-                parts.append(f"{marker} {_TOOL_NAME_COLOR}{tool.name}[/]")
+                parts.append(f"{marker} [{_TOOL_NAME_COLOR}]{tool.name}[/]")
 
         tools_line = "  ".join(parts)
         suffix = ""

@@ -11,6 +11,7 @@ from mini_cc.context.tool_use import ToolUseContext
 from mini_cc.models import (
     AgentCompletionEvent,
     AgentConfig,
+    Event,
     Message,
     QueryState,
     Role,
@@ -31,6 +32,7 @@ class AgentManager:
         stream_fn: StreamFn,
         task_service: TaskService,
         completion_queue: asyncio.Queue[AgentCompletionEvent],
+        agent_event_queue: asyncio.Queue[Event] | None = None,
         worktree_service: WorktreeService | None = None,
         prompt_builder: SystemPromptBuilder | None = None,
         env_info: EnvInfo | None = None,
@@ -39,6 +41,7 @@ class AgentManager:
         self._stream_fn = stream_fn
         self._task_service = task_service
         self._completion_queue = completion_queue
+        self._agent_event_queue = agent_event_queue
         self._worktree_svc = worktree_service or WorktreeService(project_root)
         self._prompt_builder = prompt_builder
         self._env_info = env_info
@@ -94,6 +97,7 @@ class AgentManager:
             completion_queue=self._completion_queue,
             output_dir=output_dir,
             snapshot_svc=snapshot_svc,
+            event_queue=self._agent_event_queue,
         )
 
         self._agents[agent_id] = agent
@@ -137,7 +141,7 @@ class AgentManager:
                 model_name=self._env_info.model_name,
                 model_id=self._env_info.model_id,
             )
-            system_content = self._prompt_builder.build(sub_env, mode=mode)
+            system_content = self._prompt_builder.build_for_sub_agent(sub_env, mode=mode)
             state.messages.insert(0, Message(role=Role.SYSTEM, content=system_content))
         self._inject_sub_agent_notice(state, config)
         return state

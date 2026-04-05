@@ -11,7 +11,7 @@ from mini_cc.tui.screens.chat_screen import ChatScreen
 
 class MiniCCApp(App[None]):
     BINDINGS = [
-        Binding("ctrl+c", "request_exit", "退出", show=False, priority=True),
+        Binding("ctrl+d", "request_exit", "退出", show=False, priority=True),
         Binding("ctrl+q", "request_exit", "退出", show=False, priority=True),
     ]
 

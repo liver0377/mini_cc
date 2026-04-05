@@ -10,7 +10,7 @@ from mini_cc.tui.widgets.completion_popup import CompletionPopup
 
 class InputArea(TextArea):
     BINDINGS = [
-        Binding("ctrl+c", "app.exit", "退出", show=False),
+        Binding("ctrl+d", "app.exit", "退出", show=False),
     ]
 
     DEFAULT_CSS = """
