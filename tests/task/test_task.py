@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from mini_cc.task.models import Task, TaskStatus, TaskType
+from mini_cc.models import Task, TaskStatus, TaskType
 from mini_cc.task.service import TaskService
 
 

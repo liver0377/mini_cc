@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from mini_cc.agent.manager import AgentManager
-from mini_cc.query_engine.state import (
+from mini_cc.models import (
     AgentStartEvent,
     AgentToolCallEvent,
     AgentToolResultEvent,

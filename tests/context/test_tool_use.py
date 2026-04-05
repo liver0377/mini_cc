@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 
 from mini_cc.context.tool_use import ToolUseContext
-from mini_cc.query_engine.state import ToolCall, ToolResultEvent
+from mini_cc.models import ToolCall, ToolResultEvent
 
 
 class TestGetToolSchemas:

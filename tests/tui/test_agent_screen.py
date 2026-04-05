@@ -4,7 +4,7 @@ import os
 from unittest.mock import MagicMock
 
 from mini_cc.agent.manager import AgentManager
-from mini_cc.agent.models import AgentConfig, AgentStatus
+from mini_cc.models import AgentConfig, AgentStatus
 from mini_cc.agent.sub_agent import SubAgent
 from mini_cc.tui.screens.agent_screen import _STATUS_COLORS, _STATUS_ICONS, AgentScreen
 

@@ -9,8 +9,8 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header, Static
 
 from mini_cc.agent.manager import AgentManager
-from mini_cc.agent.models import AgentStatus
 from mini_cc.agent.sub_agent import SubAgent
+from mini_cc.models import AgentStatus
 from mini_cc.tui.theme import DEFAULT_THEME
 
 _T = DEFAULT_THEME

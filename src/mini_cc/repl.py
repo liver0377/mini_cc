@@ -9,9 +9,8 @@ from rich.console import Console
 from rich.text import Text
 
 from mini_cc.context.engine_context import _EngineConfig
-from mini_cc.query_engine.engine import QueryEngine
-from mini_cc.query_engine.state import (
-    AgentCompletionNotificationEvent,
+from mini_cc.models import (
+    AgentCompletionEvent,
     AgentStartEvent,
     AgentToolCallEvent,
     AgentToolResultEvent,
@@ -22,6 +21,7 @@ from mini_cc.query_engine.state import (
     ToolCallStart,
     ToolResultEvent,
 )
+from mini_cc.query_engine.engine import QueryEngine
 
 _MAX_TOOL_OUTPUT_DISPLAY = 200
 
@@ -74,7 +74,7 @@ def render_event(event: Event, *, console: Console | None = None) -> None:
             )
         )
 
-    elif isinstance(event, AgentCompletionNotificationEvent):
+    elif isinstance(event, AgentCompletionEvent):
         status_marker = "[bold green]✓[/]" if event.success else "[bold red]✗[/]"
         _print(
             Text.from_markup(

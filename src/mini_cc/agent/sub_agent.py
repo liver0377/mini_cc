@@ -5,14 +5,15 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from mini_cc.agent.models import AgentConfig, AgentStatus
-from mini_cc.query_engine.engine import QueryEngine
-from mini_cc.query_engine.state import (
+from mini_cc.models import (
+    AgentCompletionEvent,
+    AgentConfig,
+    AgentStatus,
     Event,
     QueryState,
     TextDelta,
 )
-from mini_cc.task.models import AgentCompletionEvent
+from mini_cc.query_engine.engine import QueryEngine
 from mini_cc.task.service import TaskService
 
 if TYPE_CHECKING:
@@ -123,7 +124,7 @@ class SubAgent:
         )
         await self._completion_queue.put(completion_event)
 
-    def _write_output(self, output: str, *, success: bool) -> Path:
+    def _write_output(self, output: str, *, success: bool) -> str:
         self._output_dir.mkdir(parents=True, exist_ok=True)
         output_path = self._output_dir / f"{self._config.agent_id}.output"
         content = (
@@ -134,7 +135,7 @@ class SubAgent:
             f"{output}"
         )
         output_path.write_text(content, encoding="utf-8")
-        return output_path
+        return str(output_path)
 
 
 def build_worktree_notice(config: AgentConfig, project_root: Path) -> str:

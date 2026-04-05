@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from mini_cc.query_engine.state import ToolCall
+from mini_cc.models import ToolCall
 from mini_cc.tool_executor.executor import StreamingToolExecutor
 from mini_cc.tools.base import BaseTool, ToolRegistry, ToolResult
 

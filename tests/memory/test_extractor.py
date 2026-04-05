@@ -5,7 +5,7 @@ from mini_cc.memory.extractor import (
     MemoryExtractor,
     _parse_extraction_response,
 )
-from mini_cc.query_engine.state import Message, QueryState, Role
+from mini_cc.models import Message, QueryState, Role
 
 
 class TestParseExtractionResponse:

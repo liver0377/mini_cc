@@ -5,10 +5,8 @@ from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
 from mini_cc.agent.manager import AgentManager
-from mini_cc.agent.models import AgentConfig
 from mini_cc.context.system_prompt import EnvInfo, SystemPromptBuilder
-from mini_cc.query_engine.state import Event, QueryState, Role, TextDelta
-from mini_cc.task.models import AgentCompletionEvent
+from mini_cc.models import AgentCompletionEvent, AgentConfig, Event, QueryState, Role, TextDelta
 from mini_cc.task.service import TaskService
 from mini_cc.tools.agent_tool import AgentTool
 

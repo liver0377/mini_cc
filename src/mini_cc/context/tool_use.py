@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
-from mini_cc.query_engine.state import ToolCall, ToolResultEvent
+from mini_cc.models import ToolCall, ToolResultEvent
 
 GetToolSchemasFn = Callable[[], list[dict[str, Any]]]
 ExecuteToolCallsFn = Callable[[list[ToolCall]], AsyncGenerator[ToolResultEvent, None]]

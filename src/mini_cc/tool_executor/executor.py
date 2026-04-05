@@ -5,7 +5,7 @@ import json
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
-from mini_cc.query_engine.state import ToolCall, ToolResultEvent
+from mini_cc.models import ToolCall, ToolResultEvent
 from mini_cc.tools.base import BaseTool
 
 _SAFE_TOOL_NAMES = {"file_read", "glob", "grep"}

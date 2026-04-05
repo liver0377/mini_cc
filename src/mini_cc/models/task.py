@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -40,12 +38,3 @@ class Task(BaseModel):
     parent_agent_id: str | None = None
 
     command: str | None = None
-
-
-@dataclass(frozen=True)
-class AgentCompletionEvent:
-    agent_id: str
-    task_id: int
-    success: bool
-    output: str
-    output_path: Path

@@ -1,30 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import StrEnum
+from dataclasses import dataclass
 
-from pydantic import BaseModel, Field
-
-
-class Role(StrEnum):
-    SYSTEM = "system"
-    USER = "user"
-    ASSISTANT = "assistant"
-    TOOL = "tool"
-
-
-class ToolCall(BaseModel):
-    id: str
-    name: str
-    arguments: str
-
-
-class Message(BaseModel):
-    role: Role
-    content: str | None = None
-    tool_calls: list[ToolCall] = Field(default_factory=list)
-    tool_call_id: str | None = None
-    name: str | None = None
+from mini_cc.models.message import ToolCall
 
 
 @dataclass
@@ -85,7 +63,7 @@ class AgentToolResultEvent:
 
 
 @dataclass
-class AgentCompletionNotificationEvent:
+class AgentCompletionEvent:
     agent_id: str
     task_id: int
     success: bool
@@ -109,39 +87,8 @@ Event = (
     | AgentTextDeltaEvent
     | AgentToolCallEvent
     | AgentToolResultEvent
-    | AgentCompletionNotificationEvent
+    | AgentCompletionEvent
 )
-
-
-class QueryState(BaseModel):
-    messages: list[Message] = Field(default_factory=list)
-    turn_count: int = 0
-
-
-@dataclass
-class ToolCallSummary:
-    tool_call_id: str
-    name: str
-    success: bool
-    output_length: int
-
-
-@dataclass
-class TurnRecord:
-    turn: int
-    text_length: int = 0
-    tool_calls: list[ToolCallSummary] = field(default_factory=list)
-    elapsed_ms: float = 0.0
-
-
-@dataclass
-class QueryTracking:
-    turn: int = 0
-    history: list[TurnRecord] = field(default_factory=list)
-
-    def record_turn(self, record: TurnRecord) -> None:
-        self.history.append(record)
-        self.turn = record.turn + 1
 
 
 @dataclass

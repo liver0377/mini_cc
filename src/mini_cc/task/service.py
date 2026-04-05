@@ -7,7 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from mini_cc.task.models import Task, TaskStatus
+from mini_cc.models import Task, TaskStatus
 
 _DEFAULT_BASE_DIR = Path.home() / ".local" / "share" / "mini_cc" / "tasks"
 _LOCK_RETRY_ATTEMPTS = 5

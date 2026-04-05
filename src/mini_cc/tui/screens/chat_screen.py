@@ -9,8 +9,8 @@ from textual.screen import Screen
 
 from mini_cc.compression.compressor import compress_messages, replace_with_summary
 from mini_cc.context.engine_context import EngineContext
-from mini_cc.query_engine.state import (
-    AgentCompletionNotificationEvent,
+from mini_cc.models import (
+    AgentCompletionEvent,
     AgentStartEvent,
     AgentToolCallEvent,
     AgentToolResultEvent,
@@ -23,7 +23,6 @@ from mini_cc.query_engine.state import (
     ToolCallStart,
     ToolResultEvent,
 )
-from mini_cc.task.models import AgentCompletionEvent
 from mini_cc.tui.screens.agent_screen import AgentScreen
 from mini_cc.tui.widgets import ChatArea, InputArea, StatusBar
 from mini_cc.tui.widgets.completion_popup import CompletionPopup
@@ -297,7 +296,7 @@ class ChatScreen(Screen[None]):
             await chat.add_agent_tool_call(event.agent_id, event.tool_name)
         elif isinstance(event, AgentToolResultEvent):
             await chat.add_agent_tool_result(event.agent_id, event.tool_name, event.success, event.output_preview)
-        elif isinstance(event, AgentCompletionNotificationEvent):
+        elif isinstance(event, AgentCompletionEvent):
             await chat.end_assistant_message()
             await chat.add_agent_notification(
                 agent_id=event.agent_id,
@@ -338,18 +337,11 @@ class ChatScreen(Screen[None]):
                     continue
 
                 results.append(evt)
-                notification = AgentCompletionNotificationEvent(
+                await chat.add_agent_notification(
                     agent_id=evt.agent_id,
                     task_id=evt.task_id,
                     success=evt.success,
                     output=evt.output,
-                    output_path=str(evt.output_path),
-                )
-                await chat.add_agent_notification(
-                    agent_id=notification.agent_id,
-                    task_id=notification.task_id,
-                    success=notification.success,
-                    output=notification.output,
                 )
                 self._refresh_agent_count()
         finally:

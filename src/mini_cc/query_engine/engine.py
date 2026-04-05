@@ -12,8 +12,8 @@ from mini_cc.compression.compressor import (
     should_auto_compact,
 )
 from mini_cc.context.tool_use import ToolUseContext
-from mini_cc.query_engine.state import (
-    AgentCompletionNotificationEvent,
+from mini_cc.models import (
+    AgentCompletionEvent,
     CompactOccurred,
     Event,
     Message,
@@ -27,7 +27,6 @@ from mini_cc.query_engine.state import (
     TurnRecord,
     collect_tool_calls,
 )
-from mini_cc.task.models import AgentCompletionEvent
 
 StreamFn = Callable[
     [list[Message], list[dict[str, Any]]],
@@ -63,7 +62,7 @@ class QueryEngine:
         async for event in self._query_loop(state):
             yield event
 
-    async def _drain_completions(self) -> AsyncGenerator[AgentCompletionNotificationEvent, None]:
+    async def _drain_completions(self) -> AsyncGenerator[AgentCompletionEvent, None]:
         if self._completion_queue is None:
             return
         while not self._completion_queue.empty():
@@ -71,13 +70,7 @@ class QueryEngine:
                 evt = self._completion_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
-            yield AgentCompletionNotificationEvent(
-                agent_id=evt.agent_id,
-                task_id=evt.task_id,
-                success=evt.success,
-                output=evt.output,
-                output_path=str(evt.output_path),
-            )
+            yield evt
 
     async def _drain_agent_events(self) -> AsyncGenerator[Event, None]:
         if self._agent_event_queue is None:

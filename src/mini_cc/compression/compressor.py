@@ -6,7 +6,7 @@ from typing import Any
 import tiktoken
 
 from mini_cc.compression.prompts import COMPRESSION_SYSTEM_PROMPT
-from mini_cc.query_engine.state import Message, QueryState, Role, TextDelta
+from mini_cc.models import Message, QueryState, Role, TextDelta
 
 _AUTO_COMPACT_THRESHOLD = int(os.environ.get("AUTO_COMPACT_THRESHOLD", "80000"))
 _FALLBACK_ENCODING = "cl100k_base"

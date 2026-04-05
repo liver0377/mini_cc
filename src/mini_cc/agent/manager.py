@@ -3,15 +3,21 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from mini_cc.agent.models import AgentConfig, generate_agent_id
 from mini_cc.agent.snapshot import SnapshotService
 from mini_cc.agent.sub_agent import SubAgent, build_worktree_notice
 from mini_cc.agent.worktree import WorktreeService
 from mini_cc.context.system_prompt import EnvInfo, SystemPromptBuilder
 from mini_cc.context.tool_use import ToolUseContext
+from mini_cc.models import (
+    AgentCompletionEvent,
+    AgentConfig,
+    Message,
+    QueryState,
+    Role,
+    TaskType,
+    generate_agent_id,
+)
 from mini_cc.query_engine.engine import QueryEngine, StreamFn
-from mini_cc.query_engine.state import Message, QueryState, Role
-from mini_cc.task.models import AgentCompletionEvent, TaskType
 from mini_cc.task.service import TaskService
 from mini_cc.tool_executor.executor import StreamingToolExecutor
 from mini_cc.tools import create_default_registry, create_readonly_registry

@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 from rich.console import Console
 
-from mini_cc.query_engine.state import (
-    AgentCompletionNotificationEvent,
+from mini_cc.models import (
+    AgentCompletionEvent,
     AgentStartEvent,
     AgentToolCallEvent,
     AgentToolResultEvent,
@@ -105,7 +105,7 @@ class TestRenderAgentNotification:
     def test_successful_agent(self) -> None:
         console, buf = self._make_console()
         render_event(
-            AgentCompletionNotificationEvent(
+            AgentCompletionEvent(
                 agent_id="a3f7b2c1",
                 task_id=1,
                 success=True,
@@ -122,7 +122,7 @@ class TestRenderAgentNotification:
     def test_failed_agent(self) -> None:
         console, buf = self._make_console()
         render_event(
-            AgentCompletionNotificationEvent(
+            AgentCompletionEvent(
                 agent_id="deadbeef",
                 task_id=3,
                 success=False,
@@ -139,7 +139,7 @@ class TestRenderAgentNotification:
         console, buf = self._make_console()
         long_output = "x" * 300
         render_event(
-            AgentCompletionNotificationEvent(
+            AgentCompletionEvent(
                 agent_id="abc12345",
                 task_id=2,
                 success=True,

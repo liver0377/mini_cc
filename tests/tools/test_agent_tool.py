@@ -4,9 +4,10 @@ import asyncio
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
-from mini_cc.agent.models import AgentConfig, AgentStatus
-from mini_cc.query_engine.state import (
+from mini_cc.models import (
+    AgentConfig,
     AgentStartEvent,
+    AgentStatus,
     AgentToolCallEvent,
     AgentToolResultEvent,
     Event,

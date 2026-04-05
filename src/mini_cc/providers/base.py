@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import Any, Protocol, runtime_checkable
 
-from mini_cc.query_engine.state import Event, Message
+from mini_cc.models import Event, Message
 
 
 @runtime_checkable

@@ -10,13 +10,11 @@ from pathlib import Path
 from rich import print as rprint
 
 from mini_cc.agent.manager import AgentManager
-from mini_cc.agent.models import AgentStatus
 from mini_cc.context.system_prompt import EnvInfo, SystemPromptBuilder, collect_env_info
 from mini_cc.context.tool_use import ToolUseContext
 from mini_cc.memory.extractor import MemoryExtractor
+from mini_cc.models import AgentCompletionEvent, AgentStatus, Event, QueryState
 from mini_cc.query_engine.engine import QueryEngine
-from mini_cc.query_engine.state import Event, QueryState
-from mini_cc.task.models import AgentCompletionEvent
 from mini_cc.task.service import TaskService
 from mini_cc.tool_executor.executor import StreamingToolExecutor
 from mini_cc.tools import create_default_registry

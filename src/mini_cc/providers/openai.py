@@ -6,7 +6,7 @@ from typing import Any
 import openai
 
 from mini_cc.compression.compressor import ContextLengthExceededError
-from mini_cc.query_engine.state import (
+from mini_cc.models import (
     Event,
     Message,
     Role,

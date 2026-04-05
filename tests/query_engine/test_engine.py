@@ -7,8 +7,8 @@ from typing import Any
 
 from mini_cc.context.tool_use import ToolUseContext
 from mini_cc.query_engine.engine import QueryEngine
-from mini_cc.query_engine.state import (
-    AgentCompletionNotificationEvent,
+from mini_cc.models import (
+    AgentCompletionEvent,
     AgentStartEvent,
     AgentToolCallEvent,
     AgentToolResultEvent,
@@ -23,7 +23,6 @@ from mini_cc.query_engine.state import (
     ToolCallStart,
     ToolResultEvent,
 )
-from mini_cc.task.models import AgentCompletionEvent
 
 
 async def _stream_text_only(messages: list[Message], tools: list[dict[str, Any]]) -> AsyncGenerator[Event, None]:
@@ -266,7 +265,7 @@ class TestQueryEngineCompletionQueue:
         engine = QueryEngine(stream_fn=_stream_text_only, tool_use_ctx=_make_ctx())
         events = [e async for e in engine.submit_message("hi")]
 
-        assert not any(isinstance(e, AgentCompletionNotificationEvent) for e in events)
+        assert not any(isinstance(e, AgentCompletionEvent) for e in events)
 
     async def test_empty_queue_no_notifications(self) -> None:
         queue: asyncio.Queue[AgentCompletionEvent] = asyncio.Queue()
@@ -277,7 +276,7 @@ class TestQueryEngineCompletionQueue:
         )
         events = [e async for e in engine.submit_message("hi")]
 
-        assert not any(isinstance(e, AgentCompletionNotificationEvent) for e in events)
+        assert not any(isinstance(e, AgentCompletionEvent) for e in events)
 
     async def test_notification_yielded_before_text(self) -> None:
         queue: asyncio.Queue[AgentCompletionEvent] = asyncio.Queue()
@@ -287,7 +286,7 @@ class TestQueryEngineCompletionQueue:
                 task_id=1,
                 success=True,
                 output="agent done",
-                output_path=Path("/tmp/a3f7b2c1.output"),
+                output_path="/tmp/a3f7b2c1.output",
             )
         )
         engine = QueryEngine(
@@ -297,14 +296,14 @@ class TestQueryEngineCompletionQueue:
         )
         events = [e async for e in engine.submit_message("hi")]
 
-        notifications = [e for e in events if isinstance(e, AgentCompletionNotificationEvent)]
+        notifications = [e for e in events if isinstance(e, AgentCompletionEvent)]
         assert len(notifications) == 1
         assert notifications[0].agent_id == "a3f7b2c1"
         assert notifications[0].success is True
         assert notifications[0].output == "agent done"
         assert notifications[0].output_path == "/tmp/a3f7b2c1.output"
 
-        assert isinstance(events[0], AgentCompletionNotificationEvent)
+        assert isinstance(events[0], AgentCompletionEvent)
         assert isinstance(events[1], TextDelta)
 
     async def test_multiple_notifications_drained(self) -> None:
@@ -326,7 +325,7 @@ class TestQueryEngineCompletionQueue:
         )
         events = [e async for e in engine.submit_message("hi")]
 
-        notifications = [e for e in events if isinstance(e, AgentCompletionNotificationEvent)]
+        notifications = [e for e in events if isinstance(e, AgentCompletionEvent)]
         assert len(notifications) == 3
 
     async def test_notifications_on_multi_turn(self) -> None:
@@ -348,7 +347,7 @@ class TestQueryEngineCompletionQueue:
         )
 
         events = [e async for e in engine.submit_message("multi")]
-        notifications = [e for e in events if isinstance(e, AgentCompletionNotificationEvent)]
+        notifications = [e for e in events if isinstance(e, AgentCompletionEvent)]
         assert len(notifications) == 1
 
     async def test_failed_agent_notification(self) -> None:
@@ -369,7 +368,7 @@ class TestQueryEngineCompletionQueue:
         )
         events = [e async for e in engine.submit_message("hi")]
 
-        notifications = [e for e in events if isinstance(e, AgentCompletionNotificationEvent)]
+        notifications = [e for e in events if isinstance(e, AgentCompletionEvent)]
         assert len(notifications) == 1
         assert notifications[0].success is False
         assert notifications[0].output == "error occurred"
@@ -502,7 +501,7 @@ class TestQueryEngineAgentEventQueue:
         )
         events = [e async for e in engine.submit_message("hi")]
 
-        completions = [e for e in events if isinstance(e, AgentCompletionNotificationEvent)]
+        completions = [e for e in events if isinstance(e, AgentCompletionEvent)]
         starts = [e for e in events if isinstance(e, AgentStartEvent)]
         assert len(completions) == 1
         assert len(starts) == 1

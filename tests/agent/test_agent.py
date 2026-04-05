@@ -7,11 +7,18 @@ from unittest.mock import MagicMock
 import pytest
 
 from mini_cc.agent.manager import AgentManager
-from mini_cc.agent.models import AgentConfig, AgentId, AgentStatus, generate_agent_id
 from mini_cc.agent.sub_agent import build_worktree_notice
 from mini_cc.agent.worktree import WorktreeService
-from mini_cc.query_engine.state import Event, QueryState, TextDelta
-from mini_cc.task.models import AgentCompletionEvent
+from mini_cc.models import (
+    AgentCompletionEvent,
+    AgentConfig,
+    AgentId,
+    AgentStatus,
+    Event,
+    QueryState,
+    TextDelta,
+    generate_agent_id,
+)
 from mini_cc.task.service import TaskService
 
 
@@ -190,8 +197,9 @@ class TestSubAgent:
             pass
 
         completion: AgentCompletionEvent = await asyncio.wait_for(completion_queue.get(), timeout=1.0)
-        assert completion.output_path.exists()
-        content = completion.output_path.read_text(encoding="utf-8")
+        output_path = Path(completion.output_path)
+        assert output_path.exists()
+        content = output_path.read_text(encoding="utf-8")
         assert agent.config.agent_id in content
 
 

@@ -8,7 +8,7 @@ from typing import Any
 
 from mini_cc.memory.prompts import EXTRACTION_SYSTEM_PROMPT
 from mini_cc.memory.store import MemoryItem, list_memories, save_memory
-from mini_cc.query_engine.state import Message, QueryState, Role, TextDelta
+from mini_cc.models import Message, QueryState, Role, TextDelta
 
 logger = logging.getLogger(__name__)
 

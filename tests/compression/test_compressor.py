@@ -11,7 +11,7 @@ from mini_cc.compression.compressor import (
     replace_with_summary,
     should_auto_compact,
 )
-from mini_cc.query_engine.state import Message, QueryState, Role, TextDelta
+from mini_cc.models import Message, QueryState, Role, TextDelta
 
 
 class TestEstimateTokens:
@@ -29,7 +29,7 @@ class TestEstimateTokens:
         assert tokens > 0
 
     def test_tool_call_arguments_counted(self) -> None:
-        from mini_cc.query_engine.state import ToolCall
+        from mini_cc.models import ToolCall
 
         msgs = [
             Message(

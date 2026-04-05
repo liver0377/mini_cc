@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mini_cc.query_engine.state import (
+from mini_cc.models import (
     QueryState,
     QueryTracking,
     TextDelta,
