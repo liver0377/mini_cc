@@ -17,9 +17,7 @@
 
 每个 Task 是一个独立的 JSON 文件，路径格式：
 
-```
-~/.local/share/mini_cc/tasks/<task_list_id>/<id>.json
-```
+~/.local/share/mini_cc/tasks/\<task_list_id\>/\<id\>.json
 
 - **task_list_id**：标识一个任务列表，对应一次对话会话（主 Agent 的 session）
 - **id**：任务列表内自增整数，从 1 开始
@@ -59,12 +57,9 @@
 
 ## 依赖关系
 
-任务间通过 blocks / blocked_by 双向字段表达依赖，两个字段必须保持一致：
+任务间通过 blocks / blocked_by 双向字段表达依赖，两个字段必须保持一致。
 
-```
-task_1.blocks     = [2]     →  任务 1 阻塞任务 2
-task_2.blocked_by = [1]     →  任务 2 被任务 1 阻塞
-```
+例如：任务 1 阻塞任务 2 → task_1.blocks = [2]，task_2.blocked_by = [1]
 
 创建和删除任务时，系统自动维护引用完整性——遍历全部任务，同步更新 blocks 和 blocked_by 中的引用。
 

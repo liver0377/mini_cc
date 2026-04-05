@@ -2,13 +2,13 @@
 
 ## 概述
 
-系统采用 **主-从（Master-Worker）** 多 Agent 架构。主 Agent 是用户对话的唯一入口，拥有独立的 QueryEngine 和 QueryState。子 Agent 由主 Agent 通过 AgentTool 创建，各自拥有独立的 QueryEngine 和 QueryState，但共享主 Agent 的 LLM Provider（相同 API Key 和模型）。
+系统采用**主-从（Master-Worker）** 多 Agent 架构。主 Agent 是用户对话的唯一入口，拥有独立的 QueryEngine 和 QueryState。子 Agent 由主 Agent 通过 AgentTool 创建，各自拥有独立的 QueryEngine 和 QueryState，但共享主 Agent 的 LLM Provider（相同 API Key 和模型）。
 
 子 Agent 的工具列表**不包含 AgentTool**，因此无法递归创建更深层的子 Agent。
 
 ## 子 Agent 类型
 
-系统将子 Agent 分为两类，通过 `readonly` 参数区分：
+系统将子 Agent 分为两类，通过 readonly 参数区分：
 
 | 类型 | 用途 | 工具集 | 执行方式 | 文件隔离 | 回滚机制 |
 |------|------|--------|----------|----------|----------|
@@ -68,8 +68,8 @@
 
 ### 为什么不用 git commit 做回滚
 
-1. 不污染用户 git 历史——`git log` 不出现 agent commit，`git status` 只显示文件变更
-2. 避免 `git add -A` "偷走"用户未提交的变更
+1. 不污染用户 git 历史——git log 不出现 agent commit，git status 只显示文件变更
+2. 避免 git add -A "偷走"用户未提交的变更
 3. 用户自主决定何时 commit，agent 不越权
 
 系统选择**文件系统快照备份**——通过 SnapshotService 在工具执行前备份原始文件，回滚时从备份恢复，完全在应用层完成。
@@ -77,8 +77,8 @@
 ### 为什么只读 Agent 仍用 worktree
 
 1. 多个只读 Agent 可并行运行，各自在独立 worktree 中互不干扰
-2. 只读 Agent 的 bash 命令可能产生副作用（如生成 `__pycache__`），worktree 隔离避免污染主工作区
-3. `git worktree add` 是硬链接，创建和销毁开销极小
+2. 只读 Agent 的 bash 命令可能产生副作用（如生成 \_\_pycache\_\_），worktree 隔离避免污染主工作区
+3. git worktree add 是硬链接，创建和销毁开销极小
 
 ## 文档索引
 
