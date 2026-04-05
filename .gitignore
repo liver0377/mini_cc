@@ -38,3 +38,6 @@ uv.lock
 # api key
 .env
 
+# eval
+scripts/
+

@@ -2,38 +2,44 @@
 
 [![CI](https://github.com/liver0377/mini_cc/actions/workflows/ci.yml/badge.svg)](https://github.com/liver0377/mini_cc/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://docs.astral.sh/ruff/)
+[![Ruff](https://img.shields.io/badge/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://docs.astral.sh/ruff/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> 基于 Python 实现的轻量级多 Agent 协作代码助手 CLI
+[**中文文档**](docs/README_zh.md)
 
-## 项目愿景
+> A lightweight multi-agent collaborative coding assistant CLI built in pure Python.
 
-Mini Claude Code 旨在用纯 Python 构建一个轻量、易扩展的命令行代码智能体，支持多 Agent 协作，能够理解自然语言指令并自动完成代码编写、文件操作、测试执行等任务。
+## Vision
 
-## 效果展示
+Mini Claude Code aims to build a lightweight, extensible command-line coding agent in pure Python. It supports multi-agent collaboration and can understand natural language instructions to automatically complete tasks such as code writing, file operations, and test execution.
+
+## Demo
+
 ![](./assets/mini-cc.gif)
 
-## 功能特性
+## Features
 
-- [x] 多 Agent 协作与通信（AgentManager、SubAgent、事件系统）
-- [x] File Tool、Shell Tool、Glob/Grep...
-- [x] TUI 界面
-- [x] Sub-Agent Worktree
-- [x] Plan/Build 模式切换
-- [x] 异步 Agent Loop + 流式输出
-- [x] OpenAI 兼容 Provider
-- [x] 中断/取消支持
-- [ ] 任务自动分解与调度
-- [x] 短期/长期记忆机制
-- [ ] 会话持久化
-- [x] 自动测试与静态检查集成
-- [ ] Slash 命令
-- [x] 上下文压缩
-- [ ] sandbox
+- [x] Multi-agent collaboration & communication (AgentManager, SubAgent, event system)
+- [x] File Tool, Shell Tool, Glob/Grep...
+- [x] TUI interface
+- [x] Sub-Agent worktree isolation
+- [x] File snapshot rollback
+- [x] Plan/Build mode switching
+- [x] Async agent loop + streaming output
+- [x] OpenAI-compatible provider
+- [x] Interrupt/cancel support
+- [ ] Automatic task decomposition & scheduling
+- [x] Short-term / long-term memory
+- [ ] Session persistence
+- [x] Automated testing & static analysis integration
+- [ ] Slash commands
+- [x] Context compression
+- [ ] Sandbox
 
-## 代码量
-纯python仅3000行代码
+## Codebase
+
+Pure Python, only ~3000 lines of code.
+
 ```txt
 (.venv) ➜  mini_cc git:(main) cloc src
       52 text files.
@@ -51,45 +57,45 @@ SUM:                            52            777            175           3156
 -------------------------------------------------------------------------------
 ```
 
-## 技术栈
+## Tech Stack
 
-## 核心依赖
+### Core Dependencies
 
-| 技术 | 用途 |
+| Technology | Purpose |
 | --- | --- |
-| Python 3.11+ | 核心开发语言 |
-| uv | 包管理与虚拟环境 |
-| Typer | CLI 框架 |
-| Pydantic | 数据校验与模型定义 |
-| Textual | TUI 框架 |
+| Python 3.11+ | Core language |
+| uv | Package manager & virtual environment |
+| Typer | CLI framework |
+| Pydantic | Data validation & model definitions |
+| Textual | TUI framework |
 | bubblewrap | Sandbox |
 
-## 工程质量
+### Engineering Quality
 
-| 工具 | 用途 |
+| Tool | Purpose |
 | --- | --- |
-| Ruff | 代码格式化与静态检查 |
-| mypy | 类型检查 |
-| pytest, pytest-async | 单元测试 |
-| pre-commit | Git 提交钩子 |
-| commitzen | 提交信息规范 |
-| GitHub Actions | 持续集成 |
+| Ruff | Formatting & linting |
+| mypy | Type checking |
+| pytest, pytest-asyncio | Unit testing |
+| pre-commit | Git hooks |
+| commitizen | Commit message convention |
+| GitHub Actions | CI |
 
-## 使用
+## Getting Started
 
-本系统仅支持 Linux/WSL。
+This project only supports Linux/WSL.
 
 ```bash
-# 安装依赖
+# Install dependencies
 uv sync
 
-# 启动 TUI（默认）
+# Launch TUI (default)
 mini-cc tui
 
-# 或启动 REPL
+# Or launch REPL
 mini-cc chat
 ```
 
-## 许可证
+## License
 
 [MIT](LICENSE)
