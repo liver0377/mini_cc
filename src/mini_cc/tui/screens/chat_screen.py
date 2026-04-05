@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -43,7 +44,6 @@ class ChatScreen(Screen[None]):
         Binding("tab", "toggle_mode", "Toggle Plan/Build", show=False),
         Binding("ctrl+a", "open_agent_screen", "Agent 管理", show=True),
         Binding("escape", "interrupt", "Interrupt", show=False),
-        Binding("ctrl+c", "exit_app", "退出", show=False),
     ]
 
     def __init__(self, engine_ctx: EngineContext) -> None:
@@ -59,6 +59,8 @@ class ChatScreen(Screen[None]):
         self._pending_text: str = ""
         self._queued_text: str | None = None
         self._spinner_task: asyncio.Task[None] | None = None
+        self._spinner_event: asyncio.Event = asyncio.Event()
+        self._active_spinner = False
 
     def compose(self) -> ComposeResult:
         yield ChatArea()
@@ -79,14 +81,38 @@ class ChatScreen(Screen[None]):
             self._spinner_task.cancel()
             self._spinner_task = None
 
+    def _notify_spinner(self) -> None:
+        self._active_spinner = self._processing or self._engine_ctx.active_agent_count > 0
+        self._spinner_event.set()
+
     async def _spinner_loop(self) -> None:
         try:
             while True:
-                await asyncio.sleep(0.15)
-                status = self.query_one(StatusBar)
-                status.tick_spinner()
+                if self._active_spinner:
+                    status = self.query_one(StatusBar)
+                    status.tick_spinner()
+                    await asyncio.sleep(0.15)
+                else:
+                    self._spinner_event.clear()
+                    await self._spinner_event.wait()
         except asyncio.CancelledError:
             pass
+
+    async def graceful_shutdown(self) -> None:
+        if self._stream_task is not None and not self._stream_task.done():
+            self._interrupt_event.set()
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait_for(self._stream_task, timeout=2.0)
+            self._stream_task = None
+
+        agent_manager = self._engine_ctx.agent_manager
+        if agent_manager is not None:
+            agent_ids = list(agent_manager.agents.keys())
+            for agent_id in agent_ids:
+                try:
+                    await asyncio.wait_for(agent_manager.cleanup(agent_id), timeout=2.0)
+                except TimeoutError:
+                    pass
 
     def on_input_area_submitted(self, event: InputArea.Submitted) -> None:
         event.stop()
@@ -142,12 +168,14 @@ class ChatScreen(Screen[None]):
             self._pending_text = text
             self._processing = True
             self._interrupt_event.clear()
+            self._notify_spinner()
             self._stream_task = asyncio.create_task(self._run_compact())
             return
 
         self._pending_text = text
         self._processing = True
         self._interrupt_event.clear()
+        self._notify_spinner()
         self._stream_task = asyncio.create_task(self._run_stream(text))
 
     async def _show_help(self) -> None:
@@ -164,6 +192,7 @@ class ChatScreen(Screen[None]):
             "  [dim]Tab[/]      切换 Plan/Build 模式\n"
             "  [dim]Ctrl+A[/]   打开 Agent 管理界面\n"
             "  [dim]Esc[/]      中断当前操作\n"
+            "  [dim]Ctrl+P[/]   打开命令面板\n"
             "  [dim]Shift+Enter[/] 换行\n\n"
             "[bold]补全:[/]\n"
             "  [dim]/[/]        输入 / 触发命令补全\n"
@@ -189,6 +218,7 @@ class ChatScreen(Screen[None]):
 
         try:
             status.set_main_thinking(True)
+            self._notify_spinner()
             summary = await compress_messages(
                 self._state.messages,
                 self._engine_ctx.engine._stream_fn,
@@ -202,6 +232,7 @@ class ChatScreen(Screen[None]):
             status.set_main_thinking(False)
             self._processing = False
             self._stream_task = None
+            self._notify_spinner()
             self.query_one(InputAreaType).focus()
 
     async def _run_stream(self, user_text: str) -> None:
@@ -210,6 +241,7 @@ class ChatScreen(Screen[None]):
 
         try:
             status.set_main_thinking(True)
+            self._notify_spinner()
             await chat.add_user_message(user_text)
             await chat.begin_assistant_message()
 
@@ -240,6 +272,7 @@ class ChatScreen(Screen[None]):
             status.set_main_thinking(False)
             self._processing = False
             self._stream_task = None
+            self._notify_spinner()
             queued = self._queued_text
             if queued is not None:
                 self._queued_text = None
@@ -292,6 +325,7 @@ class ChatScreen(Screen[None]):
             return []
 
         await chat.add_system_message(f"[dim]等待 {remaining} 个后台子 Agent 完成... (Esc 跳过等待)[/]")
+        self._notify_spinner()
 
         results: list[AgentCompletionEvent] = []
         try:
@@ -329,6 +363,7 @@ class ChatScreen(Screen[None]):
         status: StatusBar,
     ) -> None:
         status.set_main_thinking(True)
+        self._notify_spinner()
         summary_parts: list[str] = []
         for r in results:
             status_label = "成功" if r.success else "失败"
@@ -359,3 +394,4 @@ class ChatScreen(Screen[None]):
     def _refresh_agent_count(self) -> None:
         count = self._engine_ctx.active_agent_count
         self.query_one(StatusBar).update_agent_count(count)
+        self._notify_spinner()

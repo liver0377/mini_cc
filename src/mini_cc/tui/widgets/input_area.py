@@ -35,6 +35,9 @@ class InputArea(TextArea):
             super().__init__()
             self.text = text
 
+    class ExitRequested(Message):
+        pass
+
     def __init__(self) -> None:
         super().__init__(
             text="",
@@ -97,6 +100,13 @@ class InputArea(TextArea):
             toggle = getattr(self.screen, "action_toggle_mode", None)
             if toggle is not None:
                 toggle()
+            return
+
+        if event.key == "ctrl+p":
+            event.prevent_default()
+            self._completion_mode = "slash"
+            if popup is not None:
+                popup.show_slash_commands("/")
             return
 
         if event.key == "enter":

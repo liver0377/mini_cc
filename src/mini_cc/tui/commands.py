@@ -23,4 +23,15 @@ BUILTIN_COMMANDS: list[SlashCommand] = [
 def match_commands(prefix: str) -> list[SlashCommand]:
     if not prefix.startswith("/"):
         return []
-    return [cmd for cmd in BUILTIN_COMMANDS if cmd.name.startswith(prefix)]
+
+    q = prefix.lower()
+
+    exact: list[SlashCommand] = []
+    desc_match: list[SlashCommand] = []
+    for cmd in BUILTIN_COMMANDS:
+        if cmd.name.startswith(q):
+            exact.append(cmd)
+        elif q.lstrip("/") in cmd.description.lower():
+            desc_match.append(cmd)
+
+    return exact + desc_match
