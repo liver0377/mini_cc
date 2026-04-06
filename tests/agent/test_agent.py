@@ -13,10 +13,19 @@ from mini_cc.models import (
     AgentCompletionEvent,
     AgentConfig,
     AgentId,
+    AgentStartEvent,
     AgentStatus,
+    AgentTextDeltaEvent,
+    AgentToolCallEvent,
+    AgentToolResultEvent,
     Event,
     QueryState,
+    Role,
     TextDelta,
+    ToolCallDelta,
+    ToolCallEnd,
+    ToolCallStart,
+    ToolResultEvent,
     generate_agent_id,
 )
 from mini_cc.task.service import TaskService
@@ -201,6 +210,61 @@ class TestSubAgent:
         assert output_path.exists()
         content = output_path.read_text(encoding="utf-8")
         assert agent.config.agent_id in content
+
+    async def test_run_background_emits_start_event(self, tmp_path, task_service, completion_queue):
+        event_queue: asyncio.Queue[Event] = asyncio.Queue()
+        manager = _make_manager(tmp_path, task_service, completion_queue)
+        agent = await manager.create_agent(prompt="bg event test", readonly=True)
+        agent._event_queue = event_queue
+
+        await agent.run_background("bg event test")
+
+        events: list[Event] = []
+        while not event_queue.empty():
+            events.append(await event_queue.get())
+        start_events = [e for e in events if isinstance(e, AgentStartEvent)]
+        assert len(start_events) == 1
+        assert start_events[0].agent_id == agent.config.agent_id
+
+    async def test_run_background_emits_tool_events(self, tmp_path, task_service, completion_queue):
+        event_queue: asyncio.Queue[Event] = asyncio.Queue()
+
+        async def _stream_with_tools(messages, schemas):
+            if any(m.role == Role.TOOL for m in messages):
+                yield TextDelta(content="done")
+                return
+            yield TextDelta(content="reading")
+            yield ToolCallStart(tool_call_id="tc_1", name="file_read")
+            yield ToolCallDelta(tool_call_id="tc_1", arguments_json_delta='{"file_path":"/tmp/a"}')
+            yield ToolCallEnd(tool_call_id="tc_1")
+
+        manager = _make_manager(tmp_path, task_service, completion_queue, stream_fn=_stream_with_tools)
+        agent = await manager.create_agent(prompt="bg tool test", readonly=True)
+        agent._event_queue = event_queue
+
+        await agent.run_background("bg tool test")
+
+        events: list[Event] = []
+        while not event_queue.empty():
+            events.append(await event_queue.get())
+        start_events = [e for e in events if isinstance(e, AgentStartEvent)]
+        tc_events = [e for e in events if isinstance(e, AgentToolCallEvent)]
+        tr_events = [e for e in events if isinstance(e, AgentToolResultEvent)]
+        td_events = [e for e in events if isinstance(e, AgentTextDeltaEvent)]
+        assert len(start_events) == 1
+        assert len(tc_events) == 1
+        assert tc_events[0].tool_name == "file_read"
+        assert len(tr_events) == 1
+        assert tr_events[0].tool_name == "file_read"
+        assert len(td_events) >= 1
+
+    async def test_run_background_no_events_without_queue(self, tmp_path, task_service, completion_queue):
+        manager = _make_manager(tmp_path, task_service, completion_queue)
+        agent = await manager.create_agent(prompt="no queue test", readonly=True)
+        assert agent._event_queue is None
+
+        await agent.run_background("no queue test")
+        assert agent.status == AgentStatus.COMPLETED
 
 
 class TestAgentManager:

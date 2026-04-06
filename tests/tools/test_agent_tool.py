@@ -231,7 +231,7 @@ class TestAgentToolEventQueue:
         assert len(tr_events) == 1
         assert tr_events[0].success is True
 
-    async def test_readonly_emits_start_event(self):
+    async def test_readonly_does_not_emit_start_from_tool(self):
         tool, manager, _, queue = self._make_tool_with_queue()
         agent = _make_agent_mock(readonly=True)
         manager.create_agent = AsyncMock(return_value=agent)
@@ -242,8 +242,7 @@ class TestAgentToolEventQueue:
         while not queue.empty():
             events.append(await queue.get())
         start_events = [e for e in events if isinstance(e, AgentStartEvent)]
-        assert len(start_events) == 1
-        assert start_events[0].agent_id == "a3f7b2c1"
+        assert len(start_events) == 0
 
     async def test_no_queue_no_events_raised(self):
         manager = AsyncMock()

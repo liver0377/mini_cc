@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from pathlib import Path
 from typing import Any
 
 from mini_cc.context.tool_use import ToolUseContext
@@ -315,7 +314,7 @@ class TestQueryEngineCompletionQueue:
                     task_id=i + 1,
                     success=True,
                     output=f"output {i}",
-                    output_path=Path(f"/tmp/agent{i:08x}.output"),
+                    output_path=f"/tmp/agent{i:08x}.output",
                 )
             )
         engine = QueryEngine(
@@ -342,7 +341,7 @@ class TestQueryEngineCompletionQueue:
                 task_id=1,
                 success=True,
                 output="done",
-                output_path=Path("/tmp/out.output"),
+                output_path="/tmp/out.output",
             )
         )
 
@@ -358,7 +357,7 @@ class TestQueryEngineCompletionQueue:
                 task_id=5,
                 success=False,
                 output="error occurred",
-                output_path=Path("/tmp/deadbeef.output"),
+                output_path="/tmp/deadbeef.output",
             )
         )
         engine = QueryEngine(
@@ -488,7 +487,7 @@ class TestQueryEngineAgentEventQueue:
                 task_id=1,
                 success=True,
                 output="done",
-                output_path=Path("/tmp/out"),
+                output_path="/tmp/out",
             )
         )
         await agent_queue.put(AgentStartEvent(agent_id="def67890", task_id=2, prompt="running"))
