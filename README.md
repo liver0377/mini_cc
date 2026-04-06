@@ -20,43 +20,27 @@ Mini Claude Code aims to build a lightweight, extensible command-line coding age
 ## Features
 
 - [x] Multi-agent collaboration & communication (AgentManager, SubAgent, event system)
-- [x] File Tool, Shell Tool, Glob/Grep...
-- [x] TUI interface
+- [x] File Tool, Shell Tool, Glob/Grep search tools
+- [x] TUI interface (Textual: chat area, collapsible tool results, agent management panel, status bar)
 - [x] Sub-Agent worktree isolation
-- [x] File snapshot rollback
-- [x] Plan/Build mode switching
+- [x] File snapshot rollback (SnapshotService)
+- [x] Plan/Build mode switching (Tab key)
 - [x] Async agent loop + streaming output
 - [x] OpenAI-compatible provider
-- [x] Interrupt/cancel support
-- [ ] Automatic task decomposition & scheduling
-- [x] Short-term / long-term memory
-- [ ] Session persistence
+- [x] Interrupt/cancel support (Esc key)
+- [x] Short-term memory (context compression) + long-term memory (cross-session persistence)
+- [x] Slash commands (/help, /compact, /clear, /mode, /agents, /exit)
+- [x] File path completion (@ trigger) + slash command completion
+- [x] Context compression (auto / reactive / manual /compact)
 - [x] Automated testing & static analysis integration
-- [ ] Slash commands
-- [x] Context compression
-- [ ] Sandbox
+- [ ] Automatic task decomposition & scheduling
+- [ ] Session persistence
+- [ ] Sandbox (bubblewrap)
 - [ ] Streaming tool dispatch: execute each tool call as soon as it completes in the LLM stream, without waiting for the full response
 
 ## Codebase
 
-Pure Python, only ~3000 lines of code.
-
-```txt
-(.venv) ➜  mini_cc git:(main) cloc src
-      52 text files.
-      52 unique files.                              
-      49 files ignored.
-
-github.com/AlDanial/cloc v 1.98  T=0.12 s (419.5 files/s, 33141.6 lines/s)
--------------------------------------------------------------------------------
-Language                     files          blank        comment           code
--------------------------------------------------------------------------------
-Python                          48            742            175           3065
-Markdown                         4             35              0             91
--------------------------------------------------------------------------------
-SUM:                            52            777            175           3156
--------------------------------------------------------------------------------
-```
+Pure Python, ~4900 lines of code, 58 source files.
 
 ## Tech Stack
 
@@ -69,27 +53,56 @@ SUM:                            52            777            175           3156
 | Typer | CLI framework |
 | Pydantic | Data validation & model definitions |
 | Textual | TUI framework |
-| bubblewrap | Sandbox |
+| tiktoken | Token counting (context compression) |
+| bubblewrap | Sandbox (planned) |
 
 ### Engineering Quality
 
 | Tool | Purpose |
 | --- | --- |
 | Ruff | Formatting & linting |
-| mypy | Type checking |
+| mypy | Type checking (strict mode) |
 | pytest, pytest-asyncio | Unit testing |
 | pre-commit | Git hooks |
 | commitizen | Commit message convention |
-| GitHub Actions | CI |
+| GitHub Actions | CI (Python 3.11 + 3.12) |
 
 ## Getting Started
 
-This project only supports Linux/WSL.
+> This project only supports Linux/WSL.
+
+### Prerequisites
+
+- [Python 3.11+](https://www.python.org/)
+- [uv](https://docs.astral.sh/uv/) — Python package manager
+- [ripgrep](https://github.com/BurntSushi/ripgrep) — required by glob/grep tools
+- [git](https://git-scm.com/)
+
+### Installation
 
 ```bash
-# Install dependencies
+git clone https://github.com/liver0377/mini_cc.git
+cd mini_cc
 uv sync
+```
 
+### Configuration
+
+Create a `.env` file in the project root:
+
+```bash
+# Required
+OPENAI_API_KEY=sk-xxx
+
+# Optional
+OPENAI_BASE_URL=https://api.openai.com/v1   # Custom API base URL (e.g. DashScope, DeepSeek)
+OPENAI_MODEL=gpt-4o                          # Model name
+AUTO_COMPACT_THRESHOLD=80000                 # Token threshold for auto-compression
+```
+
+### Usage
+
+```bash
 # Launch TUI (default)
 mini-cc tui
 
