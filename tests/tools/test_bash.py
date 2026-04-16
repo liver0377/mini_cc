@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from mini_cc.tools.bash import Bash
 
 
@@ -44,3 +46,18 @@ class TestBash:
 
         assert result.success is True
         assert result.output == "hello world"
+
+    async def test_async_interrupt(self) -> None:
+        tool = Bash()
+        interrupted = False
+
+        def _check() -> bool:
+            return interrupted
+
+        task = asyncio.create_task(tool.async_execute(command="sleep 10", timeout=10000, _is_interrupted=_check))
+        await asyncio.sleep(0.1)
+        interrupted = True
+        result = await task
+
+        assert result.success is False
+        assert result.error == "命令已取消"

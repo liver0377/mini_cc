@@ -104,6 +104,7 @@ class AgentTool(BaseTool):
             return ToolResult(output="创建子 Agent 失败: prompt 不能为空", success=False)
 
         budget = self._get_budget() if self._get_budget else None
+        budget_key: str | None = None
         if budget is not None:
             if parsed.readonly:
                 if budget.remaining_readonly <= 0:
@@ -112,6 +113,7 @@ class AgentTool(BaseTool):
                         success=False,
                     )
                 budget.remaining_readonly -= 1
+                budget_key = "remaining_readonly"
             else:
                 if budget.remaining_write <= 0:
                     return ToolResult(
@@ -119,6 +121,7 @@ class AgentTool(BaseTool):
                         success=False,
                     )
                 budget.remaining_write -= 1
+                budget_key = "remaining_write"
 
         try:
             parent_state = self._get_parent_state() if parsed.fork else None
@@ -132,6 +135,8 @@ class AgentTool(BaseTool):
                 scope_paths=parsed.scope_paths,
             )
         except Exception as e:
+            if budget is not None and budget_key is not None:
+                setattr(budget, budget_key, getattr(budget, budget_key) + 1)
             return ToolResult(output=f"创建子 Agent 失败: {e}", success=False)
 
         if parsed.readonly:
@@ -152,22 +157,20 @@ class AgentTool(BaseTool):
             return ToolResult(output="创建子 Agent 失败: dispatch_plan 不能为空", success=False)
 
         budget = self._get_budget() if self._get_budget else None
-        if budget is not None:
-            count = len(plan.dispatch_plan)
-            if count > budget.remaining_readonly:
-                msg = (
-                    f"批量派工需要 {count} 个只读 Agent，但剩余预算仅 {budget.remaining_readonly} 个。请减少派工数量。"
-                )
-                return ToolResult(output=msg, success=False)
-            budget.remaining_readonly -= count
+        count = len(plan.dispatch_plan)
+        if budget is not None and count > budget.remaining_readonly:
+            msg = f"批量派工需要 {count} 个只读 Agent，但剩余预算仅 {budget.remaining_readonly} 个。请减少派工数量。"
+            return ToolResult(output=msg, success=False)
+
+        invalid_modes = [item.mode for item in plan.dispatch_plan if item.mode != "readonly"]
+        if invalid_modes:
+            return ToolResult(
+                output=f"创建子 Agent 失败: 批量派工仅支持 readonly agent，收到 mode={invalid_modes[0]}",
+                success=False,
+            )
 
         created: list[dict[str, str | int]] = []
         for item in plan.dispatch_plan:
-            if item.mode != "readonly":
-                return ToolResult(
-                    output=f"创建子 Agent 失败: 批量派工仅支持 readonly agent，收到 mode={item.mode}",
-                    success=False,
-                )
             try:
                 agent = await self._manager.create_agent(
                     prompt=item.prompt,
@@ -177,7 +180,13 @@ class AgentTool(BaseTool):
                     mode=mode,
                 )
             except Exception as err:
-                return ToolResult(output=f"创建子 Agent 失败: {err}", success=False)
+                message = f"创建子 Agent 失败: {err}"
+                if created:
+                    message += f"（已创建 {len(created)} 个只读 Agent）"
+                return ToolResult(output=message, success=False)
+
+            if budget is not None:
+                budget.remaining_readonly -= 1
 
             asyncio.create_task(agent.run_background(item.prompt))
             created.append(

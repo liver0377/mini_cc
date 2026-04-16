@@ -16,6 +16,7 @@ _AGENTS_MD = "AGENTS.md"
 _MAX_REVIEW_COUNT = 3
 _MAX_JOURNAL_LINES = 12
 _MAX_LESSON_LINES = 12
+ReviewDict = dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -190,12 +191,12 @@ def _render_run_context(runs_dir: Path, target_run_id: str, *, lessons_only: boo
         if reviews:
             lines.append("Latest iteration reviews:")
             for review in reviews[-_MAX_REVIEW_COUNT:]:
-                constraints_list = review.get("next_constraints", [])
+                constraints_list = _read_str_list(review, "next_constraints")
                 constraints = "; ".join(constraints_list) if constraints_list else "none"
-                recommendation = review.get("recommended_step_kind") or "none"
+                recommendation = _read_str(review, "recommended_step_kind") or "none"
                 lines.append(
-                    f"- {review.get('step_id', 'unknown')}: {review.get('outcome', 'unknown')}; "
-                    f"root_cause={review.get('root_cause', '')}; "
+                    f"- {_read_str(review, 'step_id') or 'unknown'}: {_read_str(review, 'outcome') or 'unknown'}; "
+                    f"root_cause={_read_str(review, 'root_cause') or ''}; "
                     f"constraints={constraints}; next={recommendation}"
                 )
 
@@ -237,12 +238,12 @@ def _render_current_run_context(runs_dir: Path, target_run_id: str) -> str | Non
         if reviews:
             lines.append("Latest iteration reviews:")
             for review in reviews[-_MAX_REVIEW_COUNT:]:
-                constraints_list = review.get("next_constraints", [])
+                constraints_list = _read_str_list(review, "next_constraints")
                 constraints = "; ".join(constraints_list) if constraints_list else "none"
-                recommendation = review.get("recommended_step_kind") or "none"
+                recommendation = _read_str(review, "recommended_step_kind") or "none"
                 lines.append(
-                    f"- {review.get('step_id', 'unknown')}: {review.get('outcome', 'unknown')}; "
-                    f"root_cause={review.get('root_cause', '')}; "
+                    f"- {_read_str(review, 'step_id') or 'unknown'}: {_read_str(review, 'outcome') or 'unknown'}; "
+                    f"root_cause={_read_str(review, 'root_cause') or ''}; "
                     f"constraints={constraints}; next={recommendation}"
                 )
 
@@ -303,10 +304,10 @@ def _extract_lessons(path: Path) -> list[str]:
     return lesson_lines[:_MAX_LESSON_LINES]
 
 
-def _load_review_dicts(path: Path) -> list[dict[str, object]]:
+def _load_review_dicts(path: Path) -> list[ReviewDict]:
     if not path.is_file():
         return []
-    reviews: list[dict[str, object]] = []
+    reviews: list[ReviewDict] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line:
             continue
@@ -317,6 +318,18 @@ def _load_review_dicts(path: Path) -> list[dict[str, object]]:
         if isinstance(loaded, dict):
             reviews.append(loaded)
     return reviews
+
+
+def _read_str(data: ReviewDict, key: str) -> str | None:
+    value = data.get(key)
+    return value if isinstance(value, str) else None
+
+
+def _read_str_list(data: ReviewDict, key: str) -> list[str]:
+    value = data.get(key)
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
 
 
 class SystemPromptBuilder:

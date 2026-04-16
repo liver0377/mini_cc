@@ -19,12 +19,6 @@ def deadline_after(seconds: int) -> str:
     return (datetime.now(UTC) + timedelta(seconds=seconds)).isoformat()
 
 
-def parse_iso_datetime(value: str | None) -> datetime | None:
-    if value is None:
-        return None
-    return datetime.fromisoformat(value)
-
-
 class RunStatus(StrEnum):
     CREATED = "created"
     PLANNING = "planning"
@@ -39,6 +33,7 @@ class RunStatus(StrEnum):
 
 
 class StepKind(StrEnum):
+    BOOTSTRAP_PROJECT = "bootstrap_project"
     ANALYZE_REPO = "analyze_repo"
     MAKE_PLAN = "make_plan"
     EDIT_CODE = "edit_code"
@@ -76,6 +71,11 @@ class AgentTrace(BaseModel):
     completed_at: str | None = None
     success: bool | None = None
     termination_reason: str | None = None
+    output_preview: str = ""
+    output_path: str | None = None
+    is_stale: bool = False
+    base_version_stamp: str = ""
+    completed_version_stamp: str = ""
     invalidated_on_resume: bool = False
 
 
@@ -98,6 +98,7 @@ class RetryPolicy(BaseModel):
     max_step_retries: int = 2
     max_consecutive_failures: int = 3
     max_consecutive_no_progress: int = 3
+    max_replan_count: int = 3
 
 
 class Step(BaseModel):
@@ -124,16 +125,10 @@ class StepResult(BaseModel):
     next_steps: list[Step] = Field(default_factory=list)
     retryable: bool = True
     error: str | None = None
+    timed_out: bool = False
     progress_made: bool = False
     query_state: QueryState | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
-
-
-class RunSummary(BaseModel):
-    run_id: str
-    status: RunStatus
-    goal: str
-    latest_summary: str = ""
 
 
 class RunState(BaseModel):

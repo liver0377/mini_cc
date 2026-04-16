@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+import threading
 
 from mini_cc.agent.bus import AgentEventBus
 from mini_cc.context.engine_context import EngineContext
@@ -36,6 +37,8 @@ class RunHarness:
     ) -> None:
         self._store = store or CheckpointStore()
         self._lifecycle_bus = lifecycle_bus
+        self._step_runner = step_runner
+        self._run_interrupts: dict[str, threading.Event] = {}
         self._supervisor = SupervisorLoop(
             store=self._store,
             step_runner=step_runner,
@@ -77,10 +80,16 @@ class RunHarness:
             retry_policy=retry_policy,
             metadata=metadata,
         )
-        return await self._supervisor.run(run_state)
+        interrupt_event = self._run_interrupts.setdefault(run_state.run_id, threading.Event())
+        try:
+            return await self._supervisor.run_with_interrupt(run_state, interrupt_event=interrupt_event)
+        finally:
+            self._run_interrupts.pop(run_state.run_id, None)
 
     async def resume(self, run_id: str) -> RunState:
         run_state = self._store.load_state(run_id)
+        if run_state.is_terminal:
+            return run_state
         invalidated_agent_ids = self._invalidate_inflight_agents(run_state)
         recovered_step_ids = self._recover_interrupted_steps(run_state)
         if invalidated_agent_ids or recovered_step_ids:
@@ -109,7 +118,11 @@ class RunHarness:
             )
         run_state.touch()
         self._store.save_state(run_state)
-        return await self._supervisor.run(run_state)
+        interrupt_event = self._run_interrupts.setdefault(run_state.run_id, threading.Event())
+        try:
+            return await self._supervisor.run_with_interrupt(run_state, interrupt_event=interrupt_event)
+        finally:
+            self._run_interrupts.pop(run_state.run_id, None)
 
     def create_run(
         self,
@@ -138,11 +151,23 @@ class RunHarness:
 
     def cancel(self, run_id: str) -> RunState:
         run_state = self._store.load_state(run_id)
+        interrupt_event = self._run_interrupts.setdefault(run_id, threading.Event())
+        interrupt_event.set()
+        cancelled_agents = self._step_runner.cancel_active_agents(
+            [agent.agent_id for agent in run_state.spawned_agents if agent.completed_at is None]
+        )
         run_state.status = RunStatus.CANCELLED
         run_state.phase = "cancelled"
         run_state.touch()
         self._store.save_state(run_state)
-        self._store.append_event(HarnessEvent(event_type="run_cancelled", run_id=run_id, message=run_state.goal))
+        self._store.append_event(
+            HarnessEvent(
+                event_type="run_cancelled",
+                run_id=run_id,
+                message=run_state.goal,
+                data={"cancelled_agents": ",".join(cancelled_agents)},
+            )
+        )
         return run_state
 
     def latest_run_id(self) -> str | None:
@@ -229,4 +254,9 @@ class RunHarness:
                 )
             },
         )
-        run_state.steps.insert(0, resume_step)
+        insert_at = len(run_state.steps)
+        for i, s in enumerate(run_state.steps):
+            if s.status == StepStatus.PENDING:
+                insert_at = i
+                break
+        run_state.steps.insert(insert_at, resume_step)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import threading
 from pathlib import Path
 
 from mini_cc.agent.bus import AgentEventBus, AgentLifecycleEvent
@@ -96,7 +97,7 @@ class AgentManager:
         )
 
         state = self._build_initial_state(config, fork, parent_state, mode)
-        engine, snapshot_svc = self._build_engine(config)
+        engine, snapshot_svc, interrupt_event = self._build_engine(config)
 
         agent = SubAgent(
             config=config,
@@ -110,6 +111,7 @@ class AgentManager:
             event_queue=self._agent_event_queue,
             version_provider=self._workspace_version_stamp,
             lifecycle_bus=self._lifecycle_bus,
+            interrupt_event=interrupt_event,
         )
 
         self._agents[agent_id] = agent
@@ -144,6 +146,18 @@ class AgentManager:
 
     def clear_current_step(self) -> None:
         self._current_step_id = None
+
+    def cancel_agents(self, agent_ids: list[str] | None = None) -> list[str]:
+        cancelled: list[str] = []
+        target_ids = set(agent_ids) if agent_ids is not None else None
+        for agent_id, agent in self._agents.items():
+            if target_ids is not None and agent_id not in target_ids:
+                continue
+            if agent.status in {AgentStatus.COMPLETED, AgentStatus.CANCELLED}:
+                continue
+            agent.cancel()
+            cancelled.append(agent_id)
+        return cancelled
 
     def _build_initial_state(
         self,
@@ -205,21 +219,27 @@ class AgentManager:
         else:
             state.messages.insert(0, Message(role=Role.SYSTEM, content=notice))
 
-    def _build_engine(self, config: AgentConfig) -> tuple[QueryEngine, SnapshotService | None]:
+    def _build_engine(self, config: AgentConfig) -> tuple[QueryEngine, SnapshotService | None, threading.Event]:
         snapshot: SnapshotService | None = None
+        interrupt_event = threading.Event()
         if config.is_readonly:
             registry = create_readonly_registry()
-            executor = StreamingToolExecutor(registry)
+            executor = StreamingToolExecutor(registry, is_interrupted=interrupt_event.is_set)
         else:
             registry = create_default_registry()
             snapshot = SnapshotService(self._project_root, config.agent_id)
-            executor = StreamingToolExecutor(registry, pre_execute_hook=snapshot.on_tool_execute)
+            executor = StreamingToolExecutor(
+                registry,
+                pre_execute_hook=snapshot.on_tool_execute,
+                is_interrupted=interrupt_event.is_set,
+            )
         tool_use_ctx = ToolUseContext(
             get_schemas=registry.to_api_format,
             execute=executor.run,
+            is_interrupted=interrupt_event.is_set,
         )
         engine = QueryEngine(stream_fn=self._stream_fn, tool_use_ctx=tool_use_ctx)
-        return engine, snapshot
+        return engine, snapshot, interrupt_event
 
     def _normalize_scope_paths(self, scope_paths: list[str] | None) -> list[str]:
         if not scope_paths:

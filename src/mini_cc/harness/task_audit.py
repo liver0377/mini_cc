@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-import json
+import importlib
+import importlib.util
+import pkgutil
+import sys
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -23,6 +26,7 @@ class TaskAuditResult(BaseModel):
 class TaskAuditProfile:
     profile_id: str = ""
     display_name: str = ""
+    artifact_name: str = "audit.json"
 
     def parse_result(self, artifact_path: str) -> TaskAuditResult | None:
         raise NotImplementedError
@@ -78,6 +82,8 @@ class TaskAuditProfile:
             f"| Profile | {result.profile_id} |",
             f"| 摘要 | {result.summary} |",
         ]
+        if result.score_total is not None:
+            lines.append(f"| 评分 | {result.score_total} |")
         if result.recommended_next_focus:
             lines.append(f"| 下一步重点 | {result.recommended_next_focus} |")
         if result.dimensions:
@@ -104,66 +110,11 @@ class TaskAuditProfile:
         return "\n".join(lines)
 
 
-class MiniJQAuditProfile(TaskAuditProfile):
-    profile_id = "mini_jq"
-    display_name = "Mini jq"
-
-    def parse_result(self, artifact_path: str) -> TaskAuditResult | None:
-        path = Path(artifact_path)
-        if not path.is_file():
-            return None
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-        if not isinstance(loaded, dict):
-            return None
-        summary = loaded.get("summary")
-        summary_text = "task audit completed"
-        dimensions: dict[str, str] = {}
-        if isinstance(summary, dict):
-            total = summary.get("cases_total")
-            passed = summary.get("cases_passed")
-            failed = summary.get("cases_failed")
-            if total is not None:
-                dimensions["cases_total"] = str(total)
-            if passed is not None:
-                dimensions["cases_passed"] = str(passed)
-            if failed is not None:
-                dimensions["cases_failed"] = str(failed)
-            if passed is not None and total is not None:
-                summary_text = f"{passed}/{total} semantic cases passed"
-        elif isinstance(summary, str) and summary.strip():
-            summary_text = summary.strip()
-
-        coverage = loaded.get("coverage")
-        if isinstance(coverage, dict):
-            for key, value in coverage.items():
-                dimensions[f"coverage_{key}"] = str(value).lower() if isinstance(value, bool) else str(value)
-
-        score_total = loaded.get("score_total")
-        blockers = [str(item) for item in loaded.get("blockers", []) if str(item).strip()]
-        regressions = [str(item) for item in loaded.get("regressions", []) if str(item).strip()]
-        improvements = [str(item) for item in loaded.get("improvements", []) if str(item).strip()]
-        next_focus = loaded.get("recommended_next_focus")
-        return TaskAuditResult(
-            profile_id=self.profile_id,
-            summary=summary_text,
-            score_total=score_total if isinstance(score_total, int) else None,
-            dimensions=dimensions,
-            blockers=blockers,
-            regressions=regressions,
-            improvements=improvements,
-            recommended_next_focus=str(next_focus) if isinstance(next_focus, str) and next_focus.strip() else None,
-            raw_artifact_path=str(path),
-        )
-
-
 class TaskAuditRegistry:
-    def __init__(self) -> None:
-        self._profiles: dict[str, TaskAuditProfile] = {
-            "mini_jq": MiniJQAuditProfile(),
-        }
+    def __init__(self, plugin_paths: list[Path] | None = None) -> None:
+        self._profiles: dict[str, TaskAuditProfile] = {}
+        self._load_builtin_plugins()
+        self._load_filesystem_plugins(plugin_paths or self._default_plugin_paths())
 
     def get(self, profile_id: str | None) -> TaskAuditProfile | None:
         if profile_id is None:
@@ -190,15 +141,52 @@ class TaskAuditRegistry:
         profile = self.resolve_for_run(run_state_metadata)
         if profile is None:
             return None
-        if profile.profile_id == "mini_jq":
-            return Step(
-                kind=StepKind.RUN_TASK_AUDIT,
-                title="Run Task Audit",
-                goal="Execute the task-specific audit and produce a structured audit artifact.",
-                inputs={
-                    "profile": profile.profile_id,
-                    "command": test_command,
-                    "artifact_name": "jq_audit.json",
-                },
-            )
-        return None
+        return Step(
+            kind=StepKind.RUN_TASK_AUDIT,
+            title="Run Task Audit",
+            goal="Execute the task-specific audit and produce a structured audit artifact.",
+            inputs={
+                "profile": profile.profile_id,
+                "command": test_command,
+                "artifact_name": profile.artifact_name,
+            },
+        )
+
+    def _load_builtin_plugins(self) -> None:
+        package_name = "mini_cc.harness.task_audit_plugins"
+        package = importlib.import_module(package_name)
+        package_path = getattr(package, "__path__", None)
+        if package_path is None:
+            return
+        for module_info in pkgutil.iter_modules(package_path):
+            module = importlib.import_module(f"{package_name}.{module_info.name}")
+            self._register_from_module(module)
+
+    def _load_filesystem_plugins(self, plugin_paths: list[Path]) -> None:
+        for plugin_dir in plugin_paths:
+            if not plugin_dir.is_dir():
+                continue
+            for path in sorted(plugin_dir.glob("*.py")):
+                if path.name.startswith("_"):
+                    continue
+                module_name = f"mini_cc_task_audit_plugin_{path.stem}"
+                spec = importlib.util.spec_from_file_location(module_name, path)
+                if spec is None or spec.loader is None:
+                    continue
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                spec.loader.exec_module(module)
+                self._register_from_module(module)
+
+    def _register_from_module(self, module: object) -> None:
+        register = getattr(module, "register", None)
+        if not callable(register):
+            return
+        registered = register()
+        profiles = registered if isinstance(registered, list) else [registered]
+        for profile in profiles:
+            if isinstance(profile, TaskAuditProfile) and profile.profile_id:
+                self._profiles[profile.profile_id] = profile
+
+    def _default_plugin_paths(self) -> list[Path]:
+        return [Path.cwd() / ".mini_cc" / "task_audit_plugins"]

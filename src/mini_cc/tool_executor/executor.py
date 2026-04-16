@@ -11,6 +11,7 @@ from mini_cc.tools.base import BaseTool
 _SAFE_TOOL_NAMES = {"file_read", "glob", "grep", "scan_dir", "plan_agents"}
 
 PreExecuteHook = Callable[[str, dict[str, Any]], None]
+IsInterruptedFn = Callable[[], bool]
 
 
 class StreamingToolExecutor:
@@ -18,9 +19,11 @@ class StreamingToolExecutor:
         self,
         tool_registry: Any,
         pre_execute_hook: PreExecuteHook | None = None,
+        is_interrupted: IsInterruptedFn | None = None,
     ) -> None:
         self._registry = tool_registry
         self._pre_execute_hook = pre_execute_hook
+        self._is_interrupted = is_interrupted or (lambda: False)
 
     async def run(self, tool_calls: list[ToolCall]) -> AsyncGenerator[ToolResultEvent, None]:
         safe_tasks: list[tuple[ToolCall, BaseTool, dict[str, Any]]] = []
@@ -65,7 +68,10 @@ class StreamingToolExecutor:
     async def _execute_tool(self, tc: ToolCall, tool: BaseTool, kwargs: dict[str, Any]) -> ToolResultEvent:
         if self._pre_execute_hook is not None:
             self._pre_execute_hook(tool.name, kwargs)
-        result = await tool.async_execute(**kwargs)
+        call_kwargs = dict(kwargs)
+        if tool.name == "bash":
+            call_kwargs["_is_interrupted"] = self._is_interrupted
+        result = await tool.async_execute(**call_kwargs)
         return ToolResultEvent(
             tool_call_id=tc.id,
             name=tool.name,

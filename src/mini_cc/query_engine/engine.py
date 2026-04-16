@@ -137,7 +137,9 @@ class QueryEngine:
                     async for event in self._drain_agent_events():
                         yield event
 
-                    completions = await self._collect_all_completions()
+                    completions, waiting_events = await self._collect_all_completions()
+                    for event in waiting_events:
+                        yield event
                     for evt in completions:
                         yield evt
 
@@ -242,13 +244,16 @@ class QueryEngine:
             self._completion_queue is not None and self._active_agents_fn is not None and self._active_agents_fn() > 0
         )
 
-    async def _collect_all_completions(self) -> list[AgentCompletionEvent]:
+    async def _collect_all_completions(self) -> tuple[list[AgentCompletionEvent], list[Event]]:
         assert self._completion_queue is not None
         assert self._active_agents_fn is not None
 
         completions: list[AgentCompletionEvent] = []
+        waiting_events: list[Event] = []
         async for evt in self._drain_completions():
             completions.append(evt)
+        async for event in self._drain_agent_events():
+            waiting_events.append(event)
 
         while self._active_agents_fn() > 0:
             if self._tool_use_ctx.is_interrupted:
@@ -256,12 +261,14 @@ class QueryEngine:
             try:
                 evt = await asyncio.wait_for(self._completion_queue.get(), timeout=1.0)
             except TimeoutError:
+                async for event in self._drain_agent_events():
+                    waiting_events.append(event)
                 continue
             completions.append(evt)
             async for event in self._drain_agent_events():
-                pass
+                waiting_events.append(event)
 
-        return completions
+        return completions, waiting_events
 
 
 def _build_agent_summary(completions: list[AgentCompletionEvent]) -> str:

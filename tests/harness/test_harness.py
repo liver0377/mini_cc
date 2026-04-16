@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import AsyncGenerator
 
 from mini_cc.agent.bus import AgentEventBus
@@ -19,7 +21,9 @@ from mini_cc.harness import (
     RunDocGenerator,
     RunHarness,
     RunHealth,
+    RunJudge,
     RunState,
+    RunStatus,
     Step,
     StepKind,
     StepResult,
@@ -29,6 +33,7 @@ from mini_cc.harness import (
 from mini_cc.harness.events import HarnessEvent
 from mini_cc.harness.policy import PolicyAction, PolicyDecision, PolicyEngine
 from mini_cc.harness.supervisor import SupervisorLoop
+from mini_cc.harness.task_audit import TaskAuditRegistry
 from mini_cc.models import Event, Message, Role, TextDelta, ToolCall, ToolResultEvent
 from mini_cc.query_engine.engine import QueryEngine
 
@@ -181,12 +186,16 @@ class TestRunDocGenerator:
                 success=False,
                 termination_reason="invalidated_on_resume",
                 invalidated_on_resume=True,
+                is_stale=True,
+                output_preview="stale readonly summary",
             )
         )
         run_state.metadata["agents_created_readonly"] = "2"
         run_state.metadata["agents_created_write"] = "1"
         run_state.metadata["agents_succeeded"] = "2"
         run_state.metadata["agents_failed"] = "1"
+        run_state.metadata["agents_stale"] = "1"
+        run_state.metadata["agents_cancelled"] = "0"
         run_state.metadata["agent_peak_active"] = "3"
         store.save_state(run_state)
         store.append_event(
@@ -215,9 +224,11 @@ class TestRunDocGenerator:
         doc = RunDocGenerator().generate(run_state, store)
 
         assert "| 活跃 Agent 峰值 | 3 |" in doc
+        assert "| Stale / Cancelled | 1 / 0 |" in doc
         assert "| step-1 | replan | verification failed; gather diagnostics and replan" in doc
         assert "inspect_failures,make_plan" in doc
         assert "invalidated_on_resume" in doc
+        assert "stale readonly summary" in doc
         assert "| run_resumed | resume_replan | invalidated 1 inflight agents; inserted replanning step" in doc
 
     def test_generate_renders_task_audit_section(self, tmp_path) -> None:
@@ -486,6 +497,43 @@ class TestRunHarness:
         assert "Inspect Failures" in journal
         assert attempts["tests"] == 1
 
+    async def test_cancel_interrupts_inflight_query_step(self, tmp_path) -> None:
+        interrupt_seen = {"value": False}
+        engine_ctx = _make_engine_ctx(tmp_path)
+
+        async def _slow_stream(messages: list[Message], tools: list[dict[str, object]]) -> AsyncGenerator[Event, None]:
+            while not engine_ctx.is_interrupted:
+                await asyncio.sleep(0.02)
+            interrupt_seen["value"] = True
+            return
+            yield
+
+        engine_ctx.engine = QueryEngine(
+            stream_fn=_slow_stream,
+            tool_use_ctx=ToolUseContext(
+                get_schemas=lambda: [],
+                execute=_noop_execute,
+                is_interrupted=lambda: engine_ctx.is_interrupted,
+            ),
+            model="test-model",
+        )
+        harness = RunHarness.create_default(engine_ctx=engine_ctx, store=CheckpointStore(base_dir=tmp_path))
+
+        run_task = asyncio.create_task(
+            harness.run(
+                "cancel query",
+                steps=[Step(kind=StepKind.MAKE_PLAN, title="Plan", goal="plan")],
+            )
+        )
+        await asyncio.sleep(0.1)
+        run_id = next(iter(harness._run_interrupts))
+        harness.cancel(run_id)
+        result = await asyncio.wait_for(run_task, timeout=2.0)
+
+        assert interrupt_seen["value"] is True
+        assert result.status == RunStatus.CANCELLED
+        assert result.steps[0].status == StepStatus.FAILED_TERMINAL
+
 
 class TestIterationOptimizer:
     def test_apply_constraints_to_generated_steps_updates_goal_and_prompt(self) -> None:
@@ -563,6 +611,75 @@ class TestIterationOptimizer:
         assert snapshot.metadata["audit_blockers"] == "pipe evaluator mismatch"
         assert snapshot.metadata["audit_next_focus"] == "pipe_semantics"
 
+    def test_capture_includes_generic_agent_issue_metadata(self) -> None:
+        optimizer = IterationOptimizer()
+        run_state = RunState(
+            run_id="run-agent-meta",
+            goal="test",
+            metadata={
+                "agent_latest_issue": "agent-1 returned stale results",
+                "agents_failed": "1",
+                "agents_stale": "1",
+                "agents_cancelled": "0",
+            },
+        )
+        step = Step(kind=StepKind.MAKE_PLAN, title="Plan", goal="plan")
+        result = StepResult(success=True, summary="planned", progress_made=True)
+
+        snapshot = optimizer.capture(run_state, step, result, {})
+
+        assert snapshot.metadata["agent_latest_issue"] == "agent-1 returned stale results"
+        assert snapshot.metadata["agents_failed"] == "1"
+        assert snapshot.metadata["agents_stale"] == "1"
+
+    def test_review_regresses_when_generic_agent_issue_appears(self) -> None:
+        optimizer = IterationOptimizer()
+        current = IterationSnapshot(
+            run_id="run-review",
+            step_id="step-1",
+            step_kind=StepKind.EDIT_CODE.value,
+            success=True,
+            summary="edited",
+            progress_made=False,
+            metadata={
+                "agent_latest_issue": "agent-1 returned stale results",
+                "agents_failed": "1",
+                "agents_stale": "1",
+            },
+        )
+
+        review = optimizer.review(current, previous=None)
+
+        assert review.outcome == IterationOutcome.REGRESSED
+        assert review.root_cause == "Sub-agent issue: agent-1 returned stale results"
+        assert any("Resolve sub-agent issue" in item for item in review.next_constraints)
+        assert review.recommended_step_kind == StepKind.MAKE_PLAN.value
+
+    def test_review_blocks_when_same_agent_issue_repeats(self) -> None:
+        optimizer = IterationOptimizer()
+        previous = IterationSnapshot(
+            run_id="run-review",
+            step_id="step-0",
+            step_kind=StepKind.MAKE_PLAN.value,
+            success=True,
+            summary="planned",
+            progress_made=False,
+            metadata={"agent_latest_issue": "agent-1 returned stale results"},
+        )
+        current = IterationSnapshot(
+            run_id="run-review",
+            step_id="step-1",
+            step_kind=StepKind.MAKE_PLAN.value,
+            success=True,
+            summary="planned again",
+            progress_made=False,
+            metadata={"agent_latest_issue": "agent-1 returned stale results"},
+        )
+
+        review = optimizer.review(current, previous=previous)
+
+        assert review.outcome == IterationOutcome.BLOCKED
+
 
 class TestStepRunnerQueryIntegration:
     async def test_query_backed_step_uses_engine_context(self, tmp_path) -> None:
@@ -584,6 +701,74 @@ class TestStepRunnerQueryIntegration:
         assert result.query_state.messages[0].role == Role.SYSTEM
         assert result.query_state.turn_count == 1
         assert result.query_state.messages[-1].role == Role.ASSISTANT
+
+    async def test_query_step_times_out_using_default_budget(self, tmp_path) -> None:
+        async def _slow_stream(messages: list[Message], tools: list[dict[str, object]]) -> AsyncGenerator[Event, None]:
+            await asyncio.sleep(1.05)
+            yield TextDelta(content="late")
+
+        engine = QueryEngine(
+            stream_fn=_slow_stream,
+            tool_use_ctx=ToolUseContext(
+                get_schemas=lambda: [],
+                execute=_noop_execute,
+            ),
+            model="test-model",
+        )
+        env_info = collect_env_info("test-model", cwd=tmp_path)
+        engine_ctx = EngineContext(
+            engine=engine,
+            prompt_builder=SystemPromptBuilder(),
+            env_info=env_info,
+            model="test-model",
+        )
+        runner = StepRunner(engine_ctx=engine_ctx)
+        run_state = RunState(
+            run_id="run-query-timeout",
+            goal="test",
+            budget=RunBudget(max_step_seconds=1),
+        )
+        step = Step(
+            kind=StepKind.ANALYZE_REPO,
+            title="Analyze",
+            goal="analyze repository",
+            inputs={"prompt": "inspect src"},
+            budget_seconds=0,
+        )
+
+        result = await runner.run_step(step, run_state)
+
+        assert result.success is False
+        assert result.error == "Step timed out after 1 seconds"
+        assert result.metadata["timeout_seconds"] == "1"
+        assert engine_ctx.mode == "build"
+
+    async def test_bash_step_timeout_is_capped_by_step_budget(self) -> None:
+        class _RecordingBash:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, int]] = []
+
+            def execute(self, *, command: str, timeout: int):
+                from mini_cc.tools.base import ToolResult
+
+                self.calls.append((command, timeout))
+                return ToolResult(output="ok", success=True)
+
+        bash = _RecordingBash()
+        runner = StepRunner(bash_tool=bash)  # type: ignore[arg-type]
+        run_state = RunState(run_id="run-bash-timeout", goal="test", budget=RunBudget(max_step_seconds=30))
+        step = Step(
+            kind=StepKind.RUN_TESTS,
+            title="Tests",
+            goal="run tests",
+            inputs={"command": "pytest", "timeout": 120000},
+            budget_seconds=2,
+        )
+
+        result = await runner.run_step(step, run_state)
+
+        assert result.success is True
+        assert bash.calls == [("pytest", 2000)]
 
 
 class TestAgentBudget:
@@ -714,6 +899,132 @@ class TestSupervisorLifecycleDrain:
         assert result.metadata["agents_created_readonly"] == "1"
         assert result.metadata["agent_peak_active"] == "1"
 
+    async def test_lifecycle_completion_captures_generic_agent_result_signals(self, tmp_path) -> None:
+        from mini_cc.agent.bus import AgentEventBus, AgentLifecycleEvent
+
+        store = CheckpointStore(base_dir=tmp_path)
+        bus = AgentEventBus()
+
+        async def _handler(step: Step, run_state: RunState) -> StepResult:
+            if step.kind == StepKind.FINALIZE:
+                return StepResult(success=True, summary="done", progress_made=True)
+            bus.publish_nowait(
+                AgentLifecycleEvent(
+                    event_type="created",
+                    agent_id="agent-001",
+                    source_step_id=step.id,
+                    readonly=True,
+                )
+            )
+            bus.publish_nowait(
+                AgentLifecycleEvent(
+                    event_type="completed",
+                    agent_id="agent-001",
+                    success=False,
+                    output_preview="investigation failed due to stale workspace",
+                    output_path="/tmp/agent-001.output",
+                    is_stale=True,
+                    base_version_stamp="base-1",
+                    completed_version_stamp="completed-2",
+                    termination_reason="failed to reconcile latest edits",
+                )
+            )
+            return StepResult(success=True, summary="plan done", progress_made=True)
+
+        runner = StepRunner(
+            handlers={
+                StepKind.MAKE_PLAN: _handler,
+                StepKind.FINALIZE: _handler,
+            }
+        )
+        harness = RunHarness(store=store, step_runner=runner, lifecycle_bus=bus)
+
+        result = await harness.run(
+            "test lifecycle result signals",
+            steps=[
+                Step(kind=StepKind.MAKE_PLAN, title="Plan", goal="plan"),
+                Step(kind=StepKind.FINALIZE, title="Finalize", goal="finalize"),
+            ],
+        )
+
+        trace = result.spawned_agents[0]
+        assert trace.success is False
+        assert trace.is_stale is True
+        assert trace.output_preview == "investigation failed due to stale workspace"
+        assert trace.termination_reason == "failed to reconcile latest edits"
+        assert result.metadata["agents_stale"] == "1"
+        assert "stale results" in result.metadata["agent_latest_issue"]
+
+    async def test_run_waits_for_active_agents_before_completing(self, tmp_path) -> None:
+        from mini_cc.agent.bus import AgentLifecycleEvent
+
+        store = CheckpointStore(base_dir=tmp_path)
+
+        class _DeterministicBus:
+            def __init__(self) -> None:
+                self._drain_count = 0
+
+            def drain(self) -> list[AgentLifecycleEvent]:
+                self._drain_count += 1
+                if self._drain_count == 2:
+                    return [
+                        AgentLifecycleEvent(
+                            event_type="created",
+                            agent_id="agent-001",
+                            source_step_id="",
+                            readonly=True,
+                        )
+                    ]
+                if self._drain_count == 4:
+                    return [
+                        AgentLifecycleEvent(
+                            event_type="completed",
+                            agent_id="agent-001",
+                            success=True,
+                        )
+                    ]
+                return []
+
+        bus = _DeterministicBus()
+
+        async def _handler(step: Step, run_state: RunState) -> StepResult:
+            return StepResult(success=True, summary="plan done", progress_made=True)
+
+        runner = StepRunner(handlers={StepKind.MAKE_PLAN: _handler})
+        harness = RunHarness(store=store, step_runner=runner, lifecycle_bus=bus)
+
+        result = await harness.run(
+            "test wait for agents",
+            steps=[Step(kind=StepKind.MAKE_PLAN, title="Plan", goal="plan")],
+        )
+
+        assert result.status.value == "completed"
+        assert result.active_agent_count == 0
+        assert result.spawned_agents[0].completed_at is not None
+
+
+class TestSupervisorStepExceptions:
+    async def test_unhandled_step_exception_becomes_terminal_run_state(self, tmp_path) -> None:
+        store = CheckpointStore(base_dir=tmp_path)
+
+        async def _handler(step: Step, run_state: RunState) -> StepResult:
+            raise RuntimeError("boom")
+
+        runner = StepRunner(handlers={StepKind.MAKE_PLAN: _handler})
+        harness = RunHarness(store=store, step_runner=runner)
+
+        result = await harness.run(
+            "step exception",
+            steps=[Step(kind=StepKind.MAKE_PLAN, title="Plan", goal="plan")],
+        )
+
+        restored = store.load_state(result.run_id)
+        step = restored.steps[0]
+
+        assert result.status.value == "blocked"
+        assert step.status == StepStatus.FAILED_TERMINAL
+        assert step.error == "Unhandled step exception: boom"
+
 
 class TestAgentBudgetInStepRunner:
     async def test_query_step_injects_budget(self, tmp_path) -> None:
@@ -787,7 +1098,11 @@ class TestAgentBudgetInStepRunner:
             title="Task Audit",
             goal="run task audit",
             inputs={
-                "command": "printf '{\"profile\":\"mini_jq\"}'",
+                "command": (
+                    'printf \'{"profile":"mini_jq","summary":{"cases_total":10,"cases_passed":8,"cases_failed":2},'
+                    '"blockers":["pipe partial"],"regressions":[],"improvements":["field access stable"],'
+                    '"recommended_next_focus":"pipe_semantics"}\''
+                ),
                 "profile": "mini_jq",
                 "artifact_name": "jq_audit.json",
             },
@@ -799,6 +1114,10 @@ class TestAgentBudgetInStepRunner:
         assert "task_audit" in result.artifacts
         assert result.metadata["artifact_name"] == "jq_audit.json"
         assert result.metadata["audit_profile"] == "mini_jq"
+        assert result.metadata["audit_summary"] == "8/10 semantic cases passed"
+        assert result.metadata["audit_blockers"] == "pipe partial"
+        assert result.metadata["audit_next_focus"] == "pipe_semantics"
+        assert result.metadata["audit_improvements"] == "field access stable"
 
 
 class TestPolicyEngine:
@@ -847,3 +1166,285 @@ class TestPolicyEngine:
 
         assert decision is not None
         assert decision.action == PolicyAction.BLOCK
+
+    def test_audit_failure_triggers_audit_replan(self) -> None:
+        engine = PolicyEngine()
+        run_state = RunState(run_id="run-audit-fail", goal="mini jq")
+        step = Step(kind=StepKind.RUN_TASK_AUDIT, title="Audit", goal="audit")
+        result = StepResult(
+            success=False,
+            summary="audit failed",
+            retryable=False,
+            progress_made=False,
+            metadata={"audit_blockers": "parser missing", "audit_next_focus": "parser"},
+        )
+
+        decision = engine.evaluate_step(run_state, step, result, RunHealth.REGRESSING)
+
+        assert decision.action == PolicyAction.REPLAN
+        assert len(decision.insert_steps) == 1
+        assert decision.insert_steps[0].kind == StepKind.MAKE_PLAN
+        assert (
+            "audit blockers" in decision.insert_steps[0].goal.lower()
+            or "Resolve audit blockers" in decision.insert_steps[0].goal
+        )
+
+    def test_audit_failure_respects_replan_limit(self) -> None:
+        engine = PolicyEngine()
+        run_state = RunState(run_id="run-audit-limit", goal="mini jq", replan_count=3)
+        step = Step(kind=StepKind.RUN_TASK_AUDIT, title="Audit", goal="audit")
+        result = StepResult(success=False, summary="failed", retryable=False, progress_made=False)
+
+        decision = engine.evaluate_step(run_state, step, result, RunHealth.REGRESSING)
+
+        assert decision.action == PolicyAction.FAIL
+
+    def test_replan_step_includes_audit_next_focus(self) -> None:
+        engine = PolicyEngine()
+        run_state = RunState(
+            run_id="run-focus",
+            goal="mini jq",
+            metadata={"audit_next_focus": "array_iterator"},
+        )
+        step = Step(kind=StepKind.EDIT_CODE, title="Edit", goal="edit")
+        result = StepResult(success=True, summary="ok", progress_made=False)
+
+        decision = engine.evaluate_step(run_state, step, result, RunHealth.STALLED)
+
+        assert decision.action == PolicyAction.REPLAN
+        assert "array_iterator" in decision.insert_steps[0].goal
+
+    def test_timeout_step_retries_before_other_failure_policies(self) -> None:
+        engine = PolicyEngine()
+        run_state = RunState(run_id="run-timeout-retry", goal="test")
+        step = Step(kind=StepKind.EDIT_CODE, title="Edit", goal="edit")
+        result = StepResult(
+            success=False,
+            summary="",
+            retryable=True,
+            timed_out=True,
+            progress_made=False,
+            metadata={"timeout_seconds": "5"},
+        )
+
+        decision = engine.evaluate_step(run_state, step, result, RunHealth.STALLED)
+
+        assert decision.action == PolicyAction.RETRY
+        assert decision.reason == "step timed out but retry budget remains"
+
+    def test_timeout_verification_step_replans_after_retries_exhausted(self) -> None:
+        engine = PolicyEngine()
+        run_state = RunState(run_id="run-timeout-replan", goal="test")
+        step = Step(kind=StepKind.RUN_TESTS, title="Tests", goal="test", retry_count=2)
+        result = StepResult(
+            success=False,
+            summary="",
+            retryable=True,
+            timed_out=True,
+            progress_made=False,
+            metadata={"timeout_seconds": "2"},
+        )
+
+        decision = engine.evaluate_step(run_state, step, result, RunHealth.STALLED)
+
+        assert decision.action == PolicyAction.REPLAN
+        assert decision.insert_steps[0].title == "Timeout Replan"
+        assert "2 seconds" in decision.insert_steps[0].goal
+
+    def test_repeated_timeouts_block_run(self) -> None:
+        engine = PolicyEngine()
+        run_state = RunState(
+            run_id="run-timeout-blocked",
+            goal="test",
+            failure_count=3,
+        )
+        step = Step(kind=StepKind.EDIT_CODE, title="Edit", goal="edit", retry_count=2)
+        result = StepResult(
+            success=False,
+            summary="",
+            retryable=True,
+            timed_out=True,
+            progress_made=False,
+            metadata={"timeout_seconds": "3"},
+        )
+
+        decision = engine.evaluate_step(run_state, step, result, RunHealth.BLOCKED)
+
+        assert decision.action == PolicyAction.BLOCK
+        assert decision.reason == "run is blocked by repeated step timeouts"
+
+    def test_replan_step_includes_latest_agent_issue(self) -> None:
+        engine = PolicyEngine()
+        run_state = RunState(
+            run_id="run-agent-issue",
+            goal="test",
+            metadata={"agent_latest_issue": "agent-1 returned stale results"},
+        )
+        step = Step(kind=StepKind.EDIT_CODE, title="Edit", goal="edit")
+        result = StepResult(success=True, summary="ok", progress_made=False)
+
+        decision = engine.evaluate_step(run_state, step, result, RunHealth.STALLED)
+
+        assert decision.action == PolicyAction.REPLAN
+        assert "agent-1 returned stale results" in decision.insert_steps[0].goal
+
+
+class TestRunJudgeAuditAwareness:
+    def test_audit_step_progressing_when_improvements(self) -> None:
+        judge = RunJudge()
+        run_state = RunState(run_id="r1", goal="mini jq")
+        step = Step(kind=StepKind.RUN_TASK_AUDIT, title="Audit", goal="audit")
+        result = StepResult(
+            success=True,
+            summary="audit passed",
+            progress_made=True,
+            metadata={"audit_improvements": "field access stable"},
+        )
+
+        health = judge.assess(run_state, step, result)
+
+        assert health == RunHealth.PROGRESSING
+
+    def test_audit_step_regressing_when_regressions(self) -> None:
+        judge = RunJudge()
+        run_state = RunState(run_id="r1", goal="mini jq")
+        step = Step(kind=StepKind.RUN_TASK_AUDIT, title="Audit", goal="audit")
+        result = StepResult(
+            success=True,
+            summary="audit done",
+            progress_made=True,
+            metadata={"audit_regressions": "identity failed"},
+        )
+
+        health = judge.assess(run_state, step, result)
+
+        assert health == RunHealth.REGRESSING
+
+    def test_audit_step_blocked_when_blocker_repeats(self, tmp_path) -> None:
+        judge = RunJudge()
+        run_state = RunState(run_id="r1", goal="mini jq", consecutive_no_progress_count=3)
+        artifact_file = tmp_path / "prev_audit.json"
+        artifact_file.write_text(
+            json.dumps({"profile": "mini_jq", "blockers": ["parser missing case failed"]}),
+            encoding="utf-8",
+        )
+        prev_step = Step(
+            kind=StepKind.RUN_TASK_AUDIT,
+            title="Audit",
+            goal="audit",
+            status=StepStatus.SUCCEEDED,
+            artifacts={"task_audit": str(artifact_file)},
+        )
+        run_state.steps.append(prev_step)
+        step = Step(kind=StepKind.RUN_TASK_AUDIT, title="Audit", goal="audit")
+        result = StepResult(
+            success=True,
+            summary="audit done",
+            progress_made=False,
+            metadata={"audit_blockers": "parser missing case failed"},
+        )
+
+        health = judge.assess(run_state, step, result)
+
+        assert health == RunHealth.BLOCKED
+
+    def test_audit_step_stalled_when_no_change(self) -> None:
+        judge = RunJudge()
+        run_state = RunState(run_id="r1", goal="mini jq")
+        step = Step(kind=StepKind.RUN_TASK_AUDIT, title="Audit", goal="audit")
+        result = StepResult(success=True, summary="audit done", progress_made=False)
+
+        health = judge.assess(run_state, step, result)
+
+        assert health == RunHealth.STALLED
+
+    def test_audit_step_regressing_on_failure(self) -> None:
+        judge = RunJudge()
+        run_state = RunState(run_id="r1", goal="mini jq")
+        step = Step(kind=StepKind.RUN_TASK_AUDIT, title="Audit", goal="audit")
+        result = StepResult(success=False, summary="audit failed", progress_made=False)
+
+        health = judge.assess(run_state, step, result)
+
+        assert health == RunHealth.REGRESSING
+
+    def test_non_audit_step_uses_standard_logic(self) -> None:
+        judge = RunJudge()
+        run_state = RunState(run_id="r1", goal="test")
+        step = Step(kind=StepKind.RUN_TESTS, title="Tests", goal="test")
+        result = StepResult(success=True, summary="ok", progress_made=True)
+
+        health = judge.assess(run_state, step, result)
+
+        assert health == RunHealth.PROGRESSING
+
+    def test_timeout_step_is_stalled_before_reaching_failure_threshold(self) -> None:
+        judge = RunJudge()
+        run_state = RunState(run_id="r1", goal="test", failure_count=1)
+        step = Step(kind=StepKind.RUN_TESTS, title="Tests", goal="test")
+        result = StepResult(success=False, summary="", timed_out=True, progress_made=False)
+
+        health = judge.assess(run_state, step, result)
+
+        assert health == RunHealth.STALLED
+
+    def test_timeout_step_is_blocked_after_reaching_failure_threshold(self) -> None:
+        judge = RunJudge()
+        run_state = RunState(run_id="r1", goal="test", failure_count=3)
+        step = Step(kind=StepKind.RUN_TESTS, title="Tests", goal="test")
+        result = StepResult(success=False, summary="", timed_out=True, progress_made=False)
+
+        health = judge.assess(run_state, step, result)
+
+        assert health == RunHealth.BLOCKED
+
+
+class TestTaskAuditRegistryResolve:
+    def test_resolve_returns_mini_jq_profile(self) -> None:
+        registry = TaskAuditRegistry()
+        profile = registry.resolve_for_run({"audit_profile": "mini_jq"})
+        assert profile is not None
+        assert profile.profile_id == "mini_jq"
+
+    def test_resolve_returns_none_without_profile(self) -> None:
+        registry = TaskAuditRegistry()
+        profile = registry.resolve_for_run({})
+        assert profile is None
+
+    def test_build_audit_step_creates_run_task_audit_step(self) -> None:
+        registry = TaskAuditRegistry()
+        step = registry.build_audit_step({"audit_profile": "mini_jq"}, "uv run pytest")
+        assert step is not None
+        assert step.kind == StepKind.RUN_TASK_AUDIT
+        assert step.inputs["profile"] == "mini_jq"
+        assert step.inputs["artifact_name"] == "jq_audit.json"
+
+    def test_registry_loads_filesystem_plugin(self, tmp_path) -> None:
+        plugin_dir = tmp_path / "plugins"
+        plugin_dir.mkdir()
+        plugin_file = plugin_dir / "demo_plugin.py"
+        plugin_file.write_text(
+            (
+                "from __future__ import annotations\n"
+                "from mini_cc.harness.task_audit import TaskAuditProfile, TaskAuditResult\n"
+                "\n"
+                "class DemoProfile(TaskAuditProfile):\n"
+                "    profile_id = 'demo_task'\n"
+                "    display_name = 'Demo Task'\n"
+                "    artifact_name = 'demo_audit.json'\n"
+                "\n"
+                "    def parse_result(self, artifact_path: str) -> TaskAuditResult | None:\n"
+                "        return TaskAuditResult(profile_id=self.profile_id, summary='demo')\n"
+                "\n"
+                "def register() -> TaskAuditProfile:\n"
+                "    return DemoProfile()\n"
+            ),
+            encoding="utf-8",
+        )
+
+        registry = TaskAuditRegistry(plugin_paths=[plugin_dir])
+        profile = registry.get("demo_task")
+
+        assert profile is not None
+        assert profile.profile_id == "demo_task"
+        assert profile.artifact_name == "demo_audit.json"

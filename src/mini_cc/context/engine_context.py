@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import os
 import secrets
 import sys
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from rich import print as rprint
@@ -23,6 +26,13 @@ from mini_cc.tools.agent_tool import AgentTool
 
 
 class EngineContext:
+    _run_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("engine_run_id", default=None)
+    _mode_var: contextvars.ContextVar[str] = contextvars.ContextVar("engine_mode", default="build")
+    _budget_var: contextvars.ContextVar[object | None] = contextvars.ContextVar("engine_agent_budget", default=None)
+    _interrupt_var: contextvars.ContextVar[threading.Event | None] = contextvars.ContextVar(
+        "engine_interrupt_event", default=None
+    )
+
     def __init__(
         self,
         engine: QueryEngine,
@@ -33,6 +43,7 @@ class EngineContext:
         completion_queue: asyncio.Queue[AgentCompletionEvent] | None = None,
         mode: str = "build",
         model: str = "",
+        base_interrupt_event: threading.Event | None = None,
     ) -> None:
         self.engine = engine
         self.prompt_builder = prompt_builder
@@ -40,18 +51,40 @@ class EngineContext:
         self.agent_manager = agent_manager
         self.lifecycle_bus = lifecycle_bus
         self.completion_queue = completion_queue
-        self._mode = mode
         self.model = model
-        self.current_run_id: str | None = None
-        self.agent_budget: object | None = None
+        self._base_interrupt_event = base_interrupt_event
+        self._mode_var.set(mode)
 
     @property
     def mode(self) -> str:
-        return self._mode
+        return self._mode_var.get()
 
     @mode.setter
     def mode(self, value: str) -> None:
-        self._mode = value
+        self._mode_var.set(value)
+
+    @property
+    def current_run_id(self) -> str | None:
+        return self._run_id_var.get()
+
+    @current_run_id.setter
+    def current_run_id(self, value: str | None) -> None:
+        self._run_id_var.set(value)
+
+    @property
+    def agent_budget(self) -> object | None:
+        return self._budget_var.get()
+
+    @agent_budget.setter
+    def agent_budget(self, value: object | None) -> None:
+        self._budget_var.set(value)
+
+    @property
+    def is_interrupted(self) -> bool:
+        scoped = self._interrupt_var.get()
+        return (self._base_interrupt_event is not None and self._base_interrupt_event.is_set()) or (
+            scoped is not None and scoped.is_set()
+        )
 
     @property
     def active_agent_count(self) -> int:
@@ -62,6 +95,27 @@ class EngineContext:
             for a in self.agent_manager.agents.values()
             if a.status in (AgentStatus.CREATED, AgentStatus.RUNNING, AgentStatus.BACKGROUND_RUNNING)
         )
+
+    @contextmanager
+    def execution_scope(
+        self,
+        *,
+        run_id: str | None = None,
+        mode: str | None = None,
+        agent_budget: object | None = None,
+        interrupt_event: threading.Event | None = None,
+    ) -> Iterator[None]:
+        run_token = self._run_id_var.set(run_id if run_id is not None else self._run_id_var.get())
+        mode_token = self._mode_var.set(mode if mode is not None else self._mode_var.get())
+        budget_token = self._budget_var.set(agent_budget if agent_budget is not None else self._budget_var.get())
+        interrupt_token = self._interrupt_var.set(interrupt_event)
+        try:
+            yield
+        finally:
+            self._run_id_var.reset(run_token)
+            self._mode_var.reset(mode_token)
+            self._budget_var.reset(budget_token)
+            self._interrupt_var.reset(interrupt_token)
 
 
 def load_dotenv() -> None:
@@ -121,14 +175,14 @@ def create_engine(
     lifecycle_bus = AgentEventBus()
 
     registry = create_default_registry()
-    executor = StreamingToolExecutor(registry)
+    executor = StreamingToolExecutor(registry, is_interrupted=lambda: interrupt_flag.is_set())
 
     interrupt_flag = interrupted_event or threading.Event()
 
     tool_use_ctx = ToolUseContext(
         get_schemas=registry.to_api_format,
         execute=executor.run,
-        is_interrupted=interrupt_flag.is_set,
+        is_interrupted=lambda: interrupt_flag.is_set() or (ctx_ref[0].is_interrupted if ctx_ref else False),
     )
 
     memory_extractor = MemoryExtractor(stream_fn=provider.stream, cwd=str(Path.cwd()))
@@ -172,6 +226,7 @@ def create_engine(
         lifecycle_bus=lifecycle_bus,
         completion_queue=completion_queue,
         model=config.model,
+        base_interrupt_event=interrupt_flag,
     )
     ctx_ref.append(engine_ctx)
 

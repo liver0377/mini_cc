@@ -227,6 +227,40 @@ class TestReadonlyExecution:
         assert "仅支持 readonly agent" in result.output
         manager.create_agent.assert_not_called()
 
+    async def test_dispatch_plan_failure_keeps_budget_for_uncreated_agents(self):
+        manager = AsyncMock()
+        state_fn = MagicMock(return_value=QueryState())
+        budget = AgentBudget(remaining_readonly=3, remaining_write=1)
+        tool = AgentTool(
+            manager=manager,
+            get_parent_state=state_fn,
+            get_budget=lambda: budget,
+        )
+        manager.create_agent = AsyncMock(
+            side_effect=[
+                _make_agent_mock(agent_id="agent-1", task_id=1, readonly=True),
+                ValueError("boom"),
+            ]
+        )
+        dispatch_plan = json.dumps(
+            {
+                "goal": "分析项目",
+                "root": "/tmp/project",
+                "recommended_agent_count": 2,
+                "dispatch_plan": [
+                    {"index": 1, "scope": "src/agent", "mode": "readonly", "prompt": "analyze agent"},
+                    {"index": 2, "scope": "src/tui", "mode": "readonly", "prompt": "analyze tui"},
+                ],
+                "overflow_scopes": [],
+            }
+        )
+
+        result = await tool.async_execute(dispatch_plan_json=dispatch_plan)
+
+        assert result.success is False
+        assert "已创建 1 个只读 Agent" in result.output
+        assert budget.remaining_readonly == 2
+
     async def test_empty_prompt_without_plan_fails(self):
         tool, manager, _ = _make_tool()
 
@@ -251,6 +285,22 @@ class TestReadonlyExecution:
         assert result.success is False
         assert "写 Agent 预算已耗尽" in result.output
         manager.create_agent.assert_not_called()
+
+    async def test_failed_agent_creation_rolls_back_budget(self):
+        manager = AsyncMock()
+        manager.create_agent = AsyncMock(side_effect=ValueError("boom"))
+        state_fn = MagicMock(return_value=QueryState())
+        budget = AgentBudget(remaining_readonly=3, remaining_write=1)
+        tool = AgentTool(
+            manager=manager,
+            get_parent_state=state_fn,
+            get_budget=lambda: budget,
+        )
+
+        result = await tool.async_execute(prompt="edit code", readonly=False)
+
+        assert result.success is False
+        assert budget.remaining_write == 1
 
 
 class TestAgentToolEventQueue:

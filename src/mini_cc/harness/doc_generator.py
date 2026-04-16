@@ -66,7 +66,8 @@ class RunDocGenerator:
             "|---|------|------|------|----------|------|",
         ]
         for index, step in enumerate(run_state.steps, start=1):
-            outcome = review_map.get(step.id).outcome.value if step.id in review_map else "-"
+            review = review_map.get(step.id)
+            outcome = review.outcome.value if review is not None else "-"
             summary = (step.summary or step.goal).replace("\n", " ")
             lines.append(
                 f"| {index} | {step.id} | {step.kind.value} | {step.status.value} | {outcome} | {summary[:80]} |"
@@ -86,9 +87,7 @@ class RunDocGenerator:
 
         for review in reviews:
             root_cause = review.root_cause.replace("\n", " ")
-            lines.append(
-                f"| {review.step_id} | {review.score.total} | {review.outcome.value} | {root_cause[:80]} |"
-            )
+            lines.append(f"| {review.step_id} | {review.score.total} | {review.outcome.value} | {root_cause[:80]} |")
         return "\n".join(lines)
 
     def _render_agent_summary(self, run_state: RunState) -> str:
@@ -96,6 +95,8 @@ class RunDocGenerator:
         write_agents = int(run_state.metadata.get("agents_created_write", "0"))
         successful_agents = int(run_state.metadata.get("agents_succeeded", "0"))
         failed_agents = int(run_state.metadata.get("agents_failed", "0"))
+        stale_agents = int(run_state.metadata.get("agents_stale", "0"))
+        cancelled_agents = int(run_state.metadata.get("agents_cancelled", "0"))
         peak_active = int(run_state.metadata.get("agent_peak_active", str(run_state.active_agent_count)))
 
         lines = [
@@ -106,6 +107,7 @@ class RunDocGenerator:
             f"| 总创建数 | {len(run_state.spawned_agents)} |",
             f"| Readonly / Write | {readonly_agents} / {write_agents} |",
             f"| 成功 / 失败 | {successful_agents} / {failed_agents} |",
+            f"| Stale / Cancelled | {stale_agents} / {cancelled_agents} |",
             f"| 活跃 Agent 峰值 | {peak_active} |",
         ]
         if not run_state.spawned_agents:
@@ -115,8 +117,8 @@ class RunDocGenerator:
         lines.extend(
             [
                 "",
-                "| Agent | 类型 | 来源 Step | Scope | 结果 | 终止原因 |",
-                "|-------|------|-----------|-------|------|----------|",
+                "| Agent | 类型 | 来源 Step | Scope | 结果 | Stale | 终止原因 | 摘要 |",
+                "|-------|------|-----------|-------|------|-------|----------|------|",
             ]
         )
         for agent in run_state.spawned_agents:
@@ -126,9 +128,11 @@ class RunDocGenerator:
             elif agent.success is False:
                 result = "失败"
             reason = agent.termination_reason or "-"
+            preview = agent.output_preview.replace("\n", " ")
             lines.append(
                 f"| {agent.agent_id} | {'readonly' if agent.readonly else 'write'} | "
-                f"{agent.source_step_id or '-'} | {', '.join(agent.scope_paths) or '.'} | {result} | {reason} |"
+                f"{agent.source_step_id or '-'} | {', '.join(agent.scope_paths) or '.'} | "
+                f"{result} | {'yes' if agent.is_stale else 'no'} | {reason} | {preview[:50] or '-'} |"
             )
         return "\n".join(lines)
 
@@ -141,7 +145,7 @@ class RunDocGenerator:
             "|------|--------|------|",
             f"| 测试执行 | {run_state.test_run_count} | {run_state.budget.max_test_runs} |",
             f"| Bash 命令 | {run_state.bash_command_count} | {run_state.budget.max_bash_commands} |",
-            f"| REPLAN 次数 | {run_state.replan_count} | 3 |",
+            f"| REPLAN 次数 | {run_state.replan_count} | {run_state.retry_policy.max_replan_count} |",
             f"| 活跃 Agent 峰值 | {peak_active} | {run_state.budget.max_active_agents * 2} |",
         ]
         return "\n".join(lines)
@@ -149,6 +153,7 @@ class RunDocGenerator:
     def _render_quality_assessment(self, run_state: RunState, reviews: list[IterationReview]) -> str:
         final_review = reviews[-1] if reviews else None
         unresolved = final_review.next_constraints if final_review is not None else []
+        generic_agent_issues = self._generic_agent_issues(run_state)
         lines = [
             "## 质量评估",
             "",
@@ -166,6 +171,9 @@ class RunDocGenerator:
             lines.extend(f"- {item}" for item in unresolved)
         else:
             lines.append("- 无")
+        if generic_agent_issues:
+            lines.extend(["", "### Agent 结果风险", ""])
+            lines.extend(f"- {item}" for item in generic_agent_issues)
         return "\n".join(lines)
 
     def _render_decisions(self, events: list[HarnessEvent]) -> str:
@@ -281,6 +289,16 @@ class RunDocGenerator:
             *[f"- {item}" for item in effective_strategies],
         ]
         return "\n".join(lines)
+
+    def _generic_agent_issues(self, run_state: RunState) -> list[str]:
+        issues: list[str] = []
+        for agent in run_state.spawned_agents:
+            if agent.is_stale:
+                issues.append(f"{agent.agent_id} 的结果可能过期，需要在最新工作区上重新验证。")
+            elif agent.success is False:
+                reason = agent.termination_reason or "unknown failure"
+                issues.append(f"{agent.agent_id} 执行失败：{reason}")
+        return issues
 
     def _terminal_reason(self, events: list[HarnessEvent]) -> str:
         for event in reversed(events):

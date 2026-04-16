@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from pathlib import Path
 
 from rich.markup import escape
 from textual.app import ComposeResult
@@ -11,6 +12,7 @@ from textual.screen import Screen
 from mini_cc.compression.compressor import compress_messages, replace_with_summary
 from mini_cc.context.engine_context import EngineContext, create_engine
 from mini_cc.harness import RunHarness, RunState, Step, StepKind
+from mini_cc.harness.bootstrap import prepare_run_request
 from mini_cc.harness.events import HarnessEvent
 from mini_cc.models import (
     AgentCompletionEvent,
@@ -315,8 +317,12 @@ class ChatScreen(Screen[None]):
             status.set_main_thinking(True)
             self._notify_spinner()
             await chat.add_user_message(user_text)
-            steps = self._build_run_steps(user_text)
-            self._current_run = await self._harness.run(user_text, steps=steps, metadata={"mode": self._mode})
+            steps, metadata = prepare_run_request(
+                user_text,
+                self._mode,
+                Path(self._engine_ctx.env_info.working_directory),
+            )
+            self._current_run = await self._harness.run(user_text, steps=steps, metadata={"mode": self._mode, **metadata})
             self._engine_ctx.current_run_id = self._current_run.run_id
             if self._current_run.latest_query_state is not None:
                 self._state = self._current_run.latest_query_state
@@ -389,8 +395,6 @@ class ChatScreen(Screen[None]):
             await chat.add_system_message("[dim]当前没有运行中的 Run[/]")
             return
         self._harness.cancel(self._current_run.run_id)
-        if self._stream_task is not None:
-            self._stream_task.cancel()
         await chat.add_system_message(f"[dim]已请求取消 Run {self._current_run.run_id[:8]}[/]")
 
     async def _handle_event(self, event: Event, chat: ChatArea) -> None:
@@ -478,6 +482,7 @@ class ChatScreen(Screen[None]):
         elif event.event_type == "step_completed":
             step = run_state.get_step(event.step_id or "")
             if step is not None and step.kind in {
+                StepKind.BOOTSTRAP_PROJECT,
                 StepKind.ANALYZE_REPO,
                 StepKind.MAKE_PLAN,
                 StepKind.EDIT_CODE,
@@ -498,41 +503,6 @@ class ChatScreen(Screen[None]):
                 await chat.end_assistant_message()
                 self._assistant_stream_open = False
             await chat.add_system_message(f"[bold red]{escape(event.message)}[/]")
-
-    def _build_run_steps(self, user_text: str) -> list[Step]:
-        if self._mode == PLAN_MODE:
-            return [
-                Step(
-                    kind=StepKind.MAKE_PLAN,
-                    title="Plan",
-                    goal=f"为以下目标制定可执行计划：{user_text}",
-                    inputs={"prompt": user_text},
-                ),
-                Step(
-                    kind=StepKind.FINALIZE,
-                    title="Summarize",
-                    goal="总结计划、风险和下一步建议，直接回复用户。",
-                ),
-            ]
-
-        return [
-            Step(
-                kind=StepKind.ANALYZE_REPO,
-                title="Analyze",
-                goal=f"分析当前仓库，与以下目标最相关的文件、约束和风险：{user_text}",
-            ),
-            Step(
-                kind=StepKind.EDIT_CODE,
-                title="Execute",
-                goal=user_text,
-                inputs={"prompt": user_text},
-            ),
-            Step(
-                kind=StepKind.FINALIZE,
-                title="Finalize",
-                goal="总结已完成工作、未完成项、验证情况和剩余风险，直接回复用户。",
-            ),
-        ]
 
     def _update_run_status(self, run_state: RunState, step_title: str = "") -> None:
         self.query_one(StatusBar).update_run(

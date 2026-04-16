@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from mini_cc.harness.models import RunState, Step, StepKind, StepResult
+from mini_cc.harness.models import RunState, Step, StepKind, StepResult, StepStatus
 from mini_cc.harness.task_audit import TaskAuditRegistry
 
 
@@ -57,6 +58,7 @@ class IterationReview(BaseModel):
 
 class IterationOptimizer:
     _PROMPT_STEP_KINDS = {
+        StepKind.BOOTSTRAP_PROJECT,
         StepKind.ANALYZE_REPO,
         StepKind.MAKE_PLAN,
         StepKind.EDIT_CODE,
@@ -80,6 +82,13 @@ class IterationOptimizer:
         test_errors = self._extract_count(result.summary, "error") + self._extract_count(result.summary, "errors")
         command = self._string_metadata(result.metadata, "command")
         metadata = {key: value for key, value in result.metadata.items() if isinstance(value, str)}
+        agent_issue = run_state.metadata.get("agent_latest_issue")
+        if agent_issue:
+            metadata["agent_latest_issue"] = agent_issue
+        for key in ("agents_failed", "agents_stale", "agents_cancelled"):
+            value = run_state.metadata.get(key)
+            if value is not None:
+                metadata[key] = value
         audit_result = self._task_audit_registry.parse_result(run_state.metadata, artifact_paths)
         if audit_result is not None:
             profile = self._task_audit_registry.get(audit_result.profile_id)
@@ -180,6 +189,19 @@ class IterationOptimizer:
             audit_step = self._task_audit_registry.build_audit_step(run_state.metadata, audit_command)
             if audit_step is not None:
                 generated.append(audit_step)
+        if (
+            step.kind == StepKind.RUN_TASK_AUDIT
+            and result.success
+            and not self._has_pending_kind(run_state, StepKind.FINALIZE)
+            and not self._has_blockers(result)
+        ):
+            generated.append(
+                Step(
+                    kind=StepKind.FINALIZE,
+                    title="Finalize",
+                    goal="Summarize the run outcome and produce final documentation.",
+                )
+            )
         return generated
 
     def format_journal_entry(
@@ -235,6 +257,11 @@ class IterationOptimizer:
                 verification_signal += 2
 
         artifact_signal = 1 if current.artifact_paths else 0
+        agent_issue_penalty = 0
+        if self._string_metadata(current.metadata, "agent_latest_issue"):
+            agent_issue_penalty += 1
+        agent_issue_penalty += int(self._string_metadata(current.metadata, "agents_failed") or "0")
+        agent_issue_penalty += int(self._string_metadata(current.metadata, "agents_stale") or "0")
         comparison_signal = 0
         if previous is not None:
             if current.success and not previous.success:
@@ -245,8 +272,13 @@ class IterationOptimizer:
                 comparison_signal -= current.test_failed - previous.test_failed
             if current.error and previous.error and current.error == previous.error:
                 comparison_signal -= 1
+            previous_issue = self._string_metadata(previous.metadata, "agent_latest_issue")
+            current_issue = self._string_metadata(current.metadata, "agent_latest_issue")
+            if current_issue and previous_issue == current_issue:
+                comparison_signal -= 1
 
         penalty = 2 if current.error else 0
+        penalty += agent_issue_penalty
         total = success_signal + progress_signal + verification_signal + artifact_signal + comparison_signal - penalty
         return IterationScore(
             total=total,
@@ -264,16 +296,22 @@ class IterationOptimizer:
         previous: IterationSnapshot | None,
         score: IterationScore,
     ) -> IterationOutcome:
+        if self._string_metadata(current.metadata, "agent_latest_issue") and not current.progress_made:
+            if previous is not None and self._string_metadata(previous.metadata, "agent_latest_issue") == self._string_metadata(
+                current.metadata, "agent_latest_issue"
+            ):
+                return IterationOutcome.BLOCKED
+            return IterationOutcome.REGRESSED
         if not current.success and current.error and previous is not None and previous.error == current.error:
             return IterationOutcome.BLOCKED
-        if not current.success and not current.progress_made:
-            return IterationOutcome.REGRESSED
-        if current.success and not current.progress_made:
-            return IterationOutcome.STALLED
         if previous is None:
             return IterationOutcome.IMPROVED if current.success or current.progress_made else IterationOutcome.STALLED
         if score.total > 0:
             return IterationOutcome.IMPROVED
+        if not current.success and not current.progress_made:
+            return IterationOutcome.REGRESSED
+        if current.success and not current.progress_made:
+            return IterationOutcome.STALLED
         if score.total < 0:
             return IterationOutcome.REGRESSED
         return IterationOutcome.STALLED
@@ -284,6 +322,9 @@ class IterationOptimizer:
         previous: IterationSnapshot | None,
         outcome: IterationOutcome,
     ) -> str:
+        agent_issue = self._string_metadata(current.metadata, "agent_latest_issue")
+        if agent_issue:
+            return f"Sub-agent issue: {agent_issue}"
         if current.error:
             if previous is not None and previous.error == current.error:
                 return f"Repeated failure: {current.error}"
@@ -302,6 +343,8 @@ class IterationOptimizer:
             actions.append("Use saved artifacts when planning the next step")
         if current.step_kind == StepKind.RUN_TESTS.value and current.command:
             actions.append("Keep the verification command stable between iterations")
+        if self._string_metadata(current.metadata, "agent_latest_issue") is None:
+            actions.append("Reuse successful sub-agent findings when they remain fresh")
         return actions
 
     def _wasted_actions(self, current: IterationSnapshot, outcome: IterationOutcome) -> list[str]:
@@ -313,6 +356,12 @@ class IterationOptimizer:
 
     def _next_constraints(self, current: IterationSnapshot, outcome: IterationOutcome) -> list[str]:
         constraints: list[str] = []
+        agent_issue = self._string_metadata(current.metadata, "agent_latest_issue")
+        if agent_issue:
+            constraints.append(f"Resolve sub-agent issue before trusting delegated findings: {agent_issue}")
+        stale_agents = int(self._string_metadata(current.metadata, "agents_stale") or "0")
+        if stale_agents > 0:
+            constraints.append(f"Revalidate stale sub-agent outputs ({stale_agents}) against the latest workspace")
         if current.step_kind == StepKind.RUN_TESTS.value:
             if current.test_failed > 0:
                 constraints.append(f"Reduce failing tests below {current.test_failed} before finalizing")
@@ -338,6 +387,8 @@ class IterationOptimizer:
         current: IterationSnapshot,
         outcome: IterationOutcome,
     ) -> str | None:
+        if self._string_metadata(current.metadata, "agent_latest_issue"):
+            return StepKind.MAKE_PLAN.value
         if current.step_kind == StepKind.RUN_TESTS.value and not current.success:
             return StepKind.INSPECT_FAILURES.value
         if current.step_kind == StepKind.RUN_TASK_AUDIT.value and not current.success:
@@ -385,10 +436,38 @@ class IterationOptimizer:
         if isinstance(explicit, str) and explicit.strip():
             return explicit
         profile_id = run_state.metadata.get("audit_profile", "task")
-        return f"uv run python scripts/task_audit/{profile_id}.py"
+        script_path = Path(f"scripts/task_audit/{profile_id}.py")
+        command = (
+            f"uv run python {script_path}"
+            if script_path.is_file()
+            else f"uv run python scripts/task_audit/{profile_id}.py"
+        )
+        prev_path = self._find_prev_audit_path(run_state)
+        if prev_path is not None:
+            command += f" {prev_path}"
+        return command
+
+    def _find_prev_audit_path(self, run_state: RunState) -> str | None:
+        for s in reversed(run_state.steps):
+            if s.kind == StepKind.RUN_TASK_AUDIT and s.status == StepStatus.SUCCEEDED:
+                for path in s.artifacts.values():
+                    if Path(path).is_file():
+                        return path
+        return None
 
     def _has_pending_kind(self, run_state: RunState, kind: StepKind) -> bool:
-        return any(step.kind == kind and step.status.value in {"pending", "in_progress"} for step in run_state.steps)
+        return any(
+            step.kind == kind and step.status in {StepStatus.PENDING, StepStatus.IN_PROGRESS}
+            for step in run_state.steps
+        )
+
+    def _has_blockers(self, result: StepResult) -> bool:
+        blockers = result.metadata.get("audit_blockers", "")
+        if blockers.strip():
+            return True
+        if result.metadata.get("audit_profile") and not result.metadata.get("audit_summary"):
+            return True
+        return False
 
     def _supports_prompt(self, step: Step) -> bool:
         return step.kind in self._PROMPT_STEP_KINDS or "prompt" in step.inputs

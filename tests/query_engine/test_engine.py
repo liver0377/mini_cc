@@ -520,3 +520,38 @@ class TestQueryEngineAgentEventQueue:
         starts = [e for e in events if isinstance(e, AgentStartEvent)]
         assert len(completions) == 1
         assert len(starts) == 1
+
+    async def test_waiting_for_completion_preserves_agent_events(self) -> None:
+        completion_queue: asyncio.Queue[AgentCompletionEvent] = asyncio.Queue()
+        agent_queue: asyncio.Queue[Event] = asyncio.Queue()
+        active = {"count": 1}
+
+        engine = QueryEngine(
+            stream_fn=_stream_text_only,
+            tool_use_ctx=_make_ctx(),
+            completion_queue=completion_queue,
+            agent_event_queue=agent_queue,
+            active_agents_fn=lambda: active["count"],
+        )
+
+        async def _publish_later() -> None:
+            await asyncio.sleep(0.05)
+            await agent_queue.put(AgentStartEvent(agent_id="abc12345", task_id=1, prompt="waiting"))
+            await completion_queue.put(
+                AgentCompletionEvent(
+                    agent_id="abc12345",
+                    task_id=1,
+                    success=True,
+                    output="done",
+                    output_path="/tmp/out",
+                )
+            )
+            active["count"] = 0
+
+        asyncio.create_task(_publish_later())
+        events = [e async for e in engine.submit_message("hi")]
+
+        start_events = [e for e in events if isinstance(e, AgentStartEvent)]
+        completion_events = [e for e in events if isinstance(e, AgentCompletionEvent)]
+        assert len(start_events) == 1
+        assert len(completion_events) == 1

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import secrets
+import threading
 from collections.abc import Awaitable, Callable
 
 from mini_cc.agent.bus import AgentEventBus, AgentLifecycleEvent
@@ -49,6 +51,14 @@ class SupervisorLoop:
         self._lifecycle_bus = lifecycle_bus
 
     async def run(self, run_state: RunState) -> RunState:
+        return await self.run_with_interrupt(run_state, interrupt_event=None)
+
+    async def run_with_interrupt(
+        self,
+        run_state: RunState,
+        *,
+        interrupt_event: threading.Event | None,
+    ) -> RunState:
         if run_state.started_at is None:
             run_state.started_at = run_state.created_at
         if run_state.status == RunStatus.CREATED:
@@ -65,7 +75,15 @@ class SupervisorLoop:
             self._store.save_state(run_state)
 
         while not run_state.is_terminal:
+            if interrupt_event is not None and interrupt_event.is_set():
+                run_state.status = RunStatus.CANCELLED
+                run_state.phase = "cancelled"
+                run_state.current_step_id = None
+                run_state.touch()
+                self._store.save_state(run_state)
+                break
             self._drain_and_update_agents(run_state)
+            await asyncio.sleep(0)
             limit_decision = self._policy.check_run_limits(run_state)
             if limit_decision is not None:
                 self._apply_terminal_decision(run_state, limit_decision)
@@ -73,6 +91,9 @@ class SupervisorLoop:
 
             step = self._select_next_step(run_state)
             if step is None:
+                if run_state.active_agent_count > 0:
+                    await asyncio.sleep(0.05)
+                    continue
                 run_state.status = RunStatus.COMPLETED
                 run_state.phase = "completed"
                 run_state.current_step_id = None
@@ -111,8 +132,30 @@ class SupervisorLoop:
             self._store.save_state(run_state)
 
             self._set_step_context(step)
-            result = await self._step_runner.run_step(step, run_state)
-            self._clear_step_context()
+            self._step_runner.set_interrupt_event(interrupt_event)
+            try:
+                result = await self._step_runner.run_step(step, run_state)
+            except Exception as err:
+                result = StepResult(
+                    success=False,
+                    summary="",
+                    retryable=True,
+                    error=f"Unhandled step exception: {err}",
+                    progress_made=False,
+                )
+            finally:
+                self._step_runner.set_interrupt_event(None)
+                self._clear_step_context()
+            if interrupt_event is not None and interrupt_event.is_set():
+                step.error = result.error or "run cancelled during step execution"
+                step.status = StepStatus.FAILED_TERMINAL
+                run_state.sync_step(step)
+                run_state.status = RunStatus.CANCELLED
+                run_state.phase = "cancelled"
+                run_state.current_step_id = None
+                run_state.touch()
+                self._store.save_state(run_state)
+                break
             self._drain_and_update_agents(run_state)
 
             artifact_paths = self._save_artifacts(run_state, step, result.artifacts)
@@ -136,6 +179,8 @@ class SupervisorLoop:
             elif step.kind == StepKind.INSPECT_FAILURES:
                 run_state.bash_command_count += 1
                 run_state.status = RunStatus.RUNNING
+            elif step.kind == StepKind.RUN_TASK_AUDIT:
+                run_state.bash_command_count += 1
             elif step.kind == StepKind.EDIT_CODE:
                 run_state.status = RunStatus.RUNNING
 
@@ -306,18 +351,10 @@ class SupervisorLoop:
         run_state.steps[insert_at:insert_at] = normalized
 
     def _set_step_context(self, step: Step) -> None:
-        if self._step_runner._engine_ctx is None:
-            return
-        mgr = self._step_runner._engine_ctx.agent_manager
-        if mgr is not None:
-            mgr.set_current_step(step.id)
+        self._step_runner.set_step_context(step)
 
     def _clear_step_context(self) -> None:
-        if self._step_runner._engine_ctx is None:
-            return
-        mgr = self._step_runner._engine_ctx.agent_manager
-        if mgr is not None:
-            mgr.clear_current_step()
+        self._step_runner.clear_step_context()
 
     def _drain_and_update_agents(self, run_state: RunState) -> None:
         if self._lifecycle_bus is None:
@@ -340,6 +377,12 @@ class SupervisorLoop:
                     if trace.agent_id == event.agent_id and trace.completed_at is None:
                         trace.completed_at = utc_now_iso()
                         trace.success = event.success
+                        trace.output_preview = event.output_preview
+                        trace.output_path = event.output_path
+                        trace.is_stale = event.is_stale
+                        trace.base_version_stamp = event.base_version_stamp
+                        trace.completed_version_stamp = event.completed_version_stamp
+                        trace.termination_reason = event.termination_reason
                         break
         self._refresh_agent_metrics(run_state)
 
@@ -358,12 +401,26 @@ class SupervisorLoop:
         write_created = sum(1 for trace in run_state.spawned_agents if not trace.readonly)
         succeeded = sum(1 for trace in run_state.spawned_agents if trace.success is True)
         failed = sum(1 for trace in run_state.spawned_agents if trace.success is False)
+        stale = sum(1 for trace in run_state.spawned_agents if trace.is_stale)
+        cancelled = sum(1 for trace in run_state.spawned_agents if trace.termination_reason == "cancelled")
         peak_active = max(
             run_state.active_agent_count,
             int(run_state.metadata.get("agent_peak_active", "0")),
         )
+        generic_issues: list[str] = []
+        for trace in run_state.spawned_agents:
+            if trace.is_stale:
+                generic_issues.append(f"{trace.agent_id} returned stale results")
+            elif trace.success is False:
+                reason = trace.termination_reason or "unknown failure"
+                generic_issues.append(f"{trace.agent_id} failed: {reason}")
+        latest_issue = generic_issues[-1] if generic_issues else ""
         run_state.metadata["agents_created_readonly"] = str(readonly_created)
         run_state.metadata["agents_created_write"] = str(write_created)
         run_state.metadata["agents_succeeded"] = str(succeeded)
         run_state.metadata["agents_failed"] = str(failed)
+        run_state.metadata["agents_stale"] = str(stale)
+        run_state.metadata["agents_cancelled"] = str(cancelled)
         run_state.metadata["agent_peak_active"] = str(peak_active)
+        if latest_issue:
+            run_state.metadata["agent_latest_issue"] = latest_issue

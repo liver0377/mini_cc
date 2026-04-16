@@ -4,6 +4,8 @@ from pydantic import BaseModel, Field
 
 from mini_cc.harness.models import utc_now_iso
 
+__all__ = ["HarnessEvent"]
+
 
 class HarnessEvent(BaseModel):
     event_type: str
@@ -12,4 +14,3 @@ class HarnessEvent(BaseModel):
     step_id: str | None = None
     message: str = ""
     data: dict[str, str] = Field(default_factory=dict)
-

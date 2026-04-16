@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -41,6 +42,7 @@ class SubAgent:
         event_queue: asyncio.Queue[Event] | None = None,
         version_provider: Callable[[], str] | None = None,
         lifecycle_bus: AgentEventBus | None = None,
+        interrupt_event: threading.Event | None = None,
     ) -> None:
         self._config = config
         self._engine = engine
@@ -53,6 +55,7 @@ class SubAgent:
         self._event_queue = event_queue
         self._version_provider = version_provider
         self._lifecycle_bus = lifecycle_bus
+        self._interrupt_event = interrupt_event
         self._status = AgentStatus.CREATED
         self._cancel_event = asyncio.Event()
         self._collected_output: list[str] = []
@@ -117,6 +120,8 @@ class SubAgent:
 
     def cancel(self) -> None:
         self._cancel_event.set()
+        if self._interrupt_event is not None:
+            self._interrupt_event.set()
 
     async def _emit_event(self, event: Event) -> None:
         if self._event_queue is not None:
@@ -145,6 +150,7 @@ class SubAgent:
     async def _finish(self, *, success: bool, error: str | None = None) -> None:
         output_text = "".join(self._collected_output)
         truncated = output_text[:500]
+        termination_reason = "completed" if success else ("cancelled" if self._cancel_event.is_set() else "failed")
 
         if success:
             self._status = AgentStatus.COMPLETED
@@ -181,6 +187,12 @@ class SubAgent:
                     event_type=event_type,
                     agent_id=self._config.agent_id,
                     success=success,
+                    output_preview=truncated,
+                    output_path=output_path,
+                    is_stale=self._config.base_version_stamp != self._completed_version_stamp,
+                    base_version_stamp=self._config.base_version_stamp,
+                    completed_version_stamp=self._completed_version_stamp,
+                    termination_reason=termination_reason if error is None else error,
                 )
             )
 

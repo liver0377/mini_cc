@@ -12,6 +12,12 @@ class AgentLifecycleEvent:
     readonly: bool = False
     scope_paths: list[str] | None = None
     success: bool | None = None
+    output_preview: str = ""
+    output_path: str | None = None
+    is_stale: bool = False
+    base_version_stamp: str = ""
+    completed_version_stamp: str = ""
+    termination_reason: str | None = None
 
 
 class AgentEventBus:
