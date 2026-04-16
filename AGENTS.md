@@ -18,9 +18,10 @@ src/mini_cc/
 ├── repl.py                  # REPL loop, engine factory, event rendering
 ├── agent/                   # Sub-agent orchestration, worktree management
 ├── context/                 # System prompt assembly + tool-use context
+├── models/                  # Shared data models (messages, events, query state, tasks, agents)
 ├── providers/               # LLM provider Protocol + OpenAI implementation
-├── query_engine/            # Agent loop engine + state/event data models
-├── task/                    # Task queue, dependency tracking, completion events
+├── query_engine/            # Agent loop engine
+├── task/                    # Task queue service, dependency tracking
 ├── tool_executor/           # Concurrent/sequential tool execution
 ├── tools/                   # Individual tool implementations
 └── tui/                     # Textual TUI (app, screens, widgets)
@@ -84,7 +85,7 @@ Enabled: `E`, `F`, `I`, `W`, `N`, `UP`. Note: ruff lint excludes `tests/**`.
 
 - Follow isort conventions (Ruff rule `I`).
 - Three groups separated by blank lines: stdlib → third-party → local.
-- Use absolute imports from the package root: `from mini_cc.query_engine.state import Message`.
+- Use absolute imports from the package root: `from mini_cc.models import Message`.
 - No relative imports anywhere in the codebase.
 - `collections.abc` for `AsyncGenerator`, `Callable` (not `typing`).
 

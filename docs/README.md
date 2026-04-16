@@ -17,6 +17,7 @@
 | **TUI** | [tui/README.md](./tui/README.md) | Textual TUI 架构（屏幕、组件、斜杠命令、补全、Agent 管理面板） |
 | **Memory** | [memory/design.md](./memory/design.md) | 中期记忆系统（跨会话持久化、四类分类、自动提取） |
 | **Compression** | [compression/design.md](./compression/design.md) | 上下文压缩（自动压缩 / 反应式压缩 / 手动 `/compact`、tiktoken 计数） |
+| **Harness** | [harness/design.md](./harness/design.md) | 长时运行 Harness（Run 生命周期、Supervisor、Step、Checkpoint、Policy） |
 | **Security** | [security/README.md](./security/README.md) | 安全设计（Sandbox 限制、Plan/Build 模式） |
 
 ## 架构概览

@@ -59,6 +59,23 @@ class TestStatusBarDisplay:
         rendered = sb._build_display_text()
         assert "Ctrl+A" in rendered
 
+    def test_run_info_shown_when_present(self):
+        sb = StatusBar()
+        sb.update_info("build", "GPT-4o")
+        sb.update_run("abcdef123456", "running", "edit_code", "Execute")
+        rendered = sb._build_display_text()
+        assert "Run: abcdef12" in rendered
+        assert "Phase: edit_code" in rendered
+        assert "Step: Execute" in rendered
+
+    def test_clear_run_hides_run_info(self):
+        sb = StatusBar()
+        sb.update_info("build", "GPT-4o")
+        sb.update_run("abcdef123456", "running", "edit_code", "Execute")
+        sb.clear_run()
+        rendered = sb._build_display_text()
+        assert "Run:" not in rendered
+
 
 class TestStatusBarMainThinking:
     def test_set_main_thinking_true(self):

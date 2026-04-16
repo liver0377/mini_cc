@@ -33,6 +33,14 @@ class TestMatchCommands:
         results = match_commands("/模式")
         assert any(cmd.name == "/mode" for cmd in results)
 
+    def test_description_keyword_resume(self):
+        results = match_commands("/恢复")
+        assert any(cmd.name == "/resume" for cmd in results)
+
+    def test_description_keyword_cancel(self):
+        results = match_commands("/取消")
+        assert any(cmd.name == "/cancel" for cmd in results)
+
     def test_description_keyword_exit(self):
         results = match_commands("/退出")
         assert any(cmd.name == "/exit" for cmd in results)

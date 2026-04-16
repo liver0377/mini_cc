@@ -51,6 +51,10 @@ class StatusBar(Horizontal):
         self._agent_count = 0
         self._main_thinking = False
         self._spinner_idx = 0
+        self._run_id = ""
+        self._run_phase = ""
+        self._run_status = ""
+        self._current_step = ""
 
     def compose(self) -> ComposeResult:
         yield Static("", classes="status-mode", id="sb-mode")
@@ -78,6 +82,20 @@ class StatusBar(Horizontal):
         self._main_thinking = thinking
         self._refresh_display()
 
+    def update_run(self, run_id: str, status: str, phase: str, step_title: str = "") -> None:
+        self._run_id = run_id
+        self._run_status = status
+        self._run_phase = phase
+        self._current_step = step_title
+        self._refresh_display()
+
+    def clear_run(self) -> None:
+        self._run_id = ""
+        self._run_phase = ""
+        self._run_status = ""
+        self._current_step = ""
+        self._refresh_display()
+
     def tick_spinner(self) -> None:
         if self._agent_count > 0 or self._main_thinking:
             self._spinner_idx = (self._spinner_idx + 1) % len(_SPINNER_FRAMES)
@@ -95,6 +113,12 @@ class StatusBar(Horizontal):
             parts.append(f"{spinner} 思考中")
         if self._agent_count > 0:
             parts.append(f"{spinner} Agent: {self._agent_count}")
+        if self._run_id:
+            parts.append(f"Run: {self._run_id[:8]}")
+        if self._run_phase:
+            parts.append(f"Phase: {self._run_phase}")
+        if self._current_step:
+            parts.append(f"Step: {self._current_step}")
         activity_text = f" {'  '.join(parts)} " if parts else " "
 
         return f" {mode_text}  │  {self._model or 'unknown'}{activity_text}  │  Esc 中断 │ Tab 模式 │ Ctrl+A Agent "
@@ -121,6 +145,12 @@ class StatusBar(Horizontal):
             parts.append(f"{spinner} 思考中")
         if self._agent_count > 0:
             parts.append(f"{spinner} Agent: {self._agent_count}")
+        if self._run_id:
+            parts.append(f"Run: {self._run_id[:8]}")
+        if self._run_phase:
+            parts.append(f"Phase: {self._run_phase}")
+        if self._current_step:
+            parts.append(f"Step: {self._current_step}")
         activity_w.update(f" {'  '.join(parts)} " if parts else " ")
 
         hints_w.update(" Esc 中断 │ Tab 模式 │ Ctrl+A Agent ")

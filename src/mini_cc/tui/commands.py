@@ -15,6 +15,8 @@ BUILTIN_COMMANDS: list[SlashCommand] = [
     SlashCommand("/compact", "压缩对话上下文", "/compact"),
     SlashCommand("/clear", "清空聊天记录", "/clear"),
     SlashCommand("/mode", "切换 Plan/Build 模式", "/mode"),
+    SlashCommand("/resume", "恢复最近一次 Run", "/resume"),
+    SlashCommand("/cancel", "取消当前 Run", "/cancel"),
     SlashCommand("/agents", "管理子 Agent", "/agents"),
     SlashCommand("/exit", "退出程序", "/exit"),
 ]

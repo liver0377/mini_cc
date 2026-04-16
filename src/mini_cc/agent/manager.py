@@ -153,7 +153,6 @@ class AgentManager:
                 "你是一个只读子 Agent，在隔离的 git worktree 中运行。\n"
                 "- 你只有只读工具（file_read, glob, grep, bash）\n"
                 "- 不要修改任何文件\n"
-                "- 你没有 agent 工具，不能创建子 Agent\n"
                 f"- 你的工作目录: {config.worktree_path}\n"
                 f"- 原始项目路径: {self._project_root}\n"
             )
@@ -165,7 +164,6 @@ class AgentManager:
                 "- 修改文件前先阅读相关代码，确保理解上下文\n"
                 "- 每次只修改必要的最小范围\n"
                 "- 修改完成后运行相关测试验证\n"
-                "- 你没有 agent 工具，不能创建子 Agent\n"
                 f"- 你的工作目录: {config.worktree_path}\n"
             )
         if state.messages and state.messages[0].role == Role.SYSTEM:
