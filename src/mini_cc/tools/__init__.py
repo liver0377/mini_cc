@@ -7,6 +7,8 @@ from mini_cc.tools.file_read import FileRead
 from mini_cc.tools.file_write import FileWrite
 from mini_cc.tools.glob import GlobTool
 from mini_cc.tools.grep import GrepTool
+from mini_cc.tools.plan_agents import PlanAgentsTool
+from mini_cc.tools.scan_dir import ScanDirTool
 
 
 def create_default_registry() -> ToolRegistry:
@@ -17,6 +19,8 @@ def create_default_registry() -> ToolRegistry:
     registry.register(Bash())
     registry.register(GlobTool())
     registry.register(GrepTool())
+    registry.register(ScanDirTool())
+    registry.register(PlanAgentsTool())
     return registry
 
 
@@ -26,6 +30,8 @@ def create_readonly_registry() -> ToolRegistry:
     registry.register(GlobTool())
     registry.register(GrepTool())
     registry.register(Bash())
+    registry.register(ScanDirTool())
+    registry.register(PlanAgentsTool())
     return registry
 
 
@@ -39,6 +45,8 @@ __all__ = [
     "Bash",
     "GlobTool",
     "GrepTool",
+    "PlanAgentsTool",
+    "ScanDirTool",
     "create_default_registry",
     "create_readonly_registry",
 ]

@@ -121,7 +121,10 @@ class StatusBar(Horizontal):
             parts.append(f"Step: {self._current_step}")
         activity_text = f" {'  '.join(parts)} " if parts else " "
 
-        return f" {mode_text}  │  {self._model or 'unknown'}{activity_text}  │  Esc 中断 │ Tab 模式 │ Ctrl+A Agent "
+        return (
+            f" {mode_text}  │  {self._model or 'unknown'}{activity_text}"
+            "  │  Esc 中断 │ Tab 模式 │ Ctrl+A Agent │ Ctrl+R Runs "
+        )
 
     def _refresh_display(self) -> None:
         if not self.is_mounted:
@@ -153,4 +156,4 @@ class StatusBar(Horizontal):
             parts.append(f"Step: {self._current_step}")
         activity_w.update(f" {'  '.join(parts)} " if parts else " ")
 
-        hints_w.update(" Esc 中断 │ Tab 模式 │ Ctrl+A Agent ")
+        hints_w.update(" Esc 中断 │ Tab 模式 │ Ctrl+A Agent │ Ctrl+R Runs ")

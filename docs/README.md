@@ -18,6 +18,9 @@
 | **Memory** | [memory/design.md](./memory/design.md) | 中期记忆系统（跨会话持久化、四类分类、自动提取） |
 | **Compression** | [compression/design.md](./compression/design.md) | 上下文压缩（自动压缩 / 反应式压缩 / 手动 `/compact`、tiktoken 计数） |
 | **Harness** | [harness/design.md](./harness/design.md) | 长时运行 Harness（Run 生命周期、Supervisor、Step、Checkpoint、Policy） |
+| | [harness/task-specific-audit.md](./harness/task-specific-audit.md) | 任务专项审计（profile、专项 artifact、专项 judge、任务完成度文档化） |
+| **Iteration** | [iteration/design.md](./iteration/design.md) | 迭代优化系统（每轮复盘、评分、约束注入、下一轮改进） |
+| | [iteration/runtime.md](./iteration/runtime.md) | 运行期迭代记录（journal、snapshot、review 持久化格式与自动调试行为） |
 | **Security** | [security/README.md](./security/README.md) | 安全设计（Sandbox 限制、Plan/Build 模式） |
 
 ## 架构概览

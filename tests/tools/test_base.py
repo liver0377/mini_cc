@@ -109,6 +109,8 @@ class TestCreateRegistries:
         assert "bash" in names
         assert "glob" in names
         assert "grep" in names
+        assert "scan_dir" in names
+        assert "plan_agents" in names
 
     def test_readonly_registry_has_only_read_tools(self) -> None:
         from mini_cc.tools import create_readonly_registry
@@ -119,5 +121,7 @@ class TestCreateRegistries:
         assert "glob" in names
         assert "grep" in names
         assert "bash" in names
+        assert "scan_dir" in names
+        assert "plan_agents" in names
         assert "file_edit" not in names
         assert "file_write" not in names

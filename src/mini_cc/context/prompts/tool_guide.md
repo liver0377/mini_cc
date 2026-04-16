@@ -9,6 +9,8 @@
 ### 搜索
 - **glob 用于找文件**：按文件名模式搜索（如 `**/*.py`）
 - **grep 用于搜内容**：按正则表达式搜索文件内容
+- **scan_dir 用于目录编排**：先获取目录层级、模块边界和候选派工范围，再决定如何拆分 sub-agent
+- **plan_agents 用于派工规划**：根据目标和目录结构直接生成 JSON 格式的 agent 数量、scope 和 prompt 骨架
 - 优先使用 glob/grep 而非 bash find/grep，因为它们的输出更结构化
 
 ### Shell 命令
@@ -55,6 +57,8 @@
 ```
 ❌ 错误：创建 1 个 agent，让它自己慢慢读
 ✅ 正确：创建 3-5 个 readonly agent 并行探索：
+  - 先用 `scan_dir` 查看 src/、tests/、docs/ 的层级摘要，确认应该按哪些目录拆分
+  - 再用 `plan_agents` 生成 JSON 派工单，读取 `dispatch_plan` 里的 scope / mode / prompt
   - agent 1: 探索 src/tui/ 目录，分析 UI 架构和组件设计
   - agent 2: 探索 src/agent/ 和 src/query_engine/，分析核心引擎逻辑
   - agent 3: 探索 src/tools/ 和 src/tool_executor/，分析工具系统

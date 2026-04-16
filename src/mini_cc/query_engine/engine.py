@@ -147,6 +147,19 @@ class QueryEngine:
                         has_attempted_reactive = False
                         continue
 
+                state.messages.append(Message(role=Role.ASSISTANT, content=assistant_content))
+                record = TurnRecord(
+                    turn=tracking.turn,
+                    text_length=len(assistant_content),
+                    elapsed_ms=(time.monotonic() - t0) * 1000,
+                )
+                tracking.record_turn(record)
+                state.turn_count += 1
+                self._tool_use_ctx.trace("stream_end", turn=tracking.turn)
+
+                if self._post_turn_hook is not None:
+                    await self._post_turn_hook(state)
+
                 break
 
             allowed: list[ToolCall] = []
@@ -255,7 +268,16 @@ def _build_agent_summary(completions: list[AgentCompletionEvent]) -> str:
     summary_parts: list[str] = []
     for c in completions:
         status_label = "成功" if c.success else "失败"
-        summary_parts.append(f"## 子 Agent {c.agent_id} (Task #{c.task_id}) - {status_label}\n\n{c.output}")
+        stale_label = " [结果可能过期]" if c.is_stale else ""
+        version_lines = ""
+        if c.base_version_stamp or c.completed_version_stamp:
+            version_lines = (
+                f"\n\nbase_version: {c.base_version_stamp or '(无)'}"
+                f"\ncompleted_version: {c.completed_version_stamp or '(无)'}"
+            )
+        summary_parts.append(
+            f"## 子 Agent {c.agent_id} (Task #{c.task_id}) - {status_label}{stale_label}\n\n{c.output}{version_lines}"
+        )
     summary = "\n\n---\n\n".join(summary_parts)
     return f"以下是之前启动的后台只读子 Agent 的完成结果。\n请基于这些结果，继续回复用户的原始问题。\n\n{summary}"
 

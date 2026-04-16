@@ -9,6 +9,7 @@ from pathlib import Path
 
 from rich import print as rprint
 
+from mini_cc.agent.bus import AgentEventBus
 from mini_cc.agent.manager import AgentManager
 from mini_cc.context.system_prompt import EnvInfo, SystemPromptBuilder, collect_env_info
 from mini_cc.context.tool_use import ToolUseContext
@@ -28,6 +29,7 @@ class EngineContext:
         prompt_builder: SystemPromptBuilder,
         env_info: EnvInfo,
         agent_manager: AgentManager | None = None,
+        lifecycle_bus: AgentEventBus | None = None,
         completion_queue: asyncio.Queue[AgentCompletionEvent] | None = None,
         mode: str = "build",
         model: str = "",
@@ -36,9 +38,12 @@ class EngineContext:
         self.prompt_builder = prompt_builder
         self.env_info = env_info
         self.agent_manager = agent_manager
+        self.lifecycle_bus = lifecycle_bus
         self.completion_queue = completion_queue
         self._mode = mode
         self.model = model
+        self.current_run_id: str | None = None
+        self.agent_budget: object | None = None
 
     @property
     def mode(self) -> str:
@@ -63,7 +68,9 @@ def load_dotenv() -> None:
     try:
         from dotenv import load_dotenv as _load
 
-        _load()
+        project_root = Path(__file__).resolve().parents[3]
+        dotenv_path = project_root / ".env"
+        _load(dotenv_path=dotenv_path, override=True)
     except ImportError:
         pass
 
@@ -111,6 +118,7 @@ def create_engine(
 
     completion_queue: asyncio.Queue[AgentCompletionEvent] = asyncio.Queue()
     agent_event_queue: asyncio.Queue[Event] = asyncio.Queue()
+    lifecycle_bus = AgentEventBus()
 
     registry = create_default_registry()
     executor = StreamingToolExecutor(registry)
@@ -153,6 +161,7 @@ def create_engine(
         agent_event_queue=agent_event_queue,
         prompt_builder=prompt_builder,
         env_info=env_info,
+        lifecycle_bus=lifecycle_bus,
     )
 
     engine_ctx = EngineContext(
@@ -160,6 +169,7 @@ def create_engine(
         prompt_builder=prompt_builder,
         env_info=env_info,
         agent_manager=agent_manager,
+        lifecycle_bus=lifecycle_bus,
         completion_queue=completion_queue,
         model=config.model,
     )
@@ -172,6 +182,7 @@ def create_engine(
         get_parent_state=lambda: engine.state if engine.state else QueryState(),
         event_queue=agent_event_queue,
         get_mode=lambda: ctx_ref[0].mode,
+        get_budget=lambda: ctx_ref[0].agent_budget if ctx_ref else None,
     )
     registry.register(agent_tool)
 

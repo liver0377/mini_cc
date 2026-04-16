@@ -9,7 +9,7 @@ from textual.binding import Binding
 from textual.screen import Screen
 
 from mini_cc.compression.compressor import compress_messages, replace_with_summary
-from mini_cc.context.engine_context import EngineContext
+from mini_cc.context.engine_context import EngineContext, create_engine
 from mini_cc.harness import RunHarness, RunState, Step, StepKind
 from mini_cc.harness.events import HarnessEvent
 from mini_cc.models import (
@@ -27,6 +27,7 @@ from mini_cc.models import (
     ToolResultEvent,
 )
 from mini_cc.tui.screens.agent_screen import AgentScreen
+from mini_cc.tui.screens.run_screen import RunScreen
 from mini_cc.tui.widgets import ChatArea, InputArea, StatusBar
 from mini_cc.tui.widgets.completion_popup import CompletionPopup
 from mini_cc.tui.widgets.input_area import InputArea as InputAreaType
@@ -45,6 +46,7 @@ class ChatScreen(Screen[None]):
     BINDINGS = [
         Binding("tab", "toggle_mode", "Toggle Plan/Build", show=False),
         Binding("ctrl+a", "open_agent_screen", "Agent 管理", show=True),
+        Binding("ctrl+r", "open_run_screen", "Run 时间线", show=True),
         Binding("escape", "interrupt", "Interrupt", show=False),
     ]
 
@@ -52,7 +54,15 @@ class ChatScreen(Screen[None]):
         super().__init__()
         self._engine_ctx = engine_ctx
         self._state = QueryState(
-            messages=[Message(role=Role.SYSTEM, content=engine_ctx.prompt_builder.build(engine_ctx.env_info))]
+            messages=[
+                Message(
+                    role=Role.SYSTEM,
+                    content=engine_ctx.prompt_builder.build(
+                        engine_ctx.env_info,
+                        run_id=engine_ctx.current_run_id,
+                    ),
+                )
+            ]
         )
         self._harness = RunHarness.create_default(
             engine_ctx=engine_ctx,
@@ -70,6 +80,9 @@ class ChatScreen(Screen[None]):
         self._active_spinner = False
         self._current_run: RunState | None = None
         self._assistant_stream_open = False
+        self._current_text_step_id: str | None = None
+        self._current_step_had_output = False
+        self._last_announced_step_key: tuple[str, str] | None = None
 
     def compose(self) -> ComposeResult:
         yield ChatArea()
@@ -149,8 +162,21 @@ class ChatScreen(Screen[None]):
         if self._engine_ctx.agent_manager is not None:
             self.app.push_screen(AgentScreen(self._engine_ctx.agent_manager))
 
+    def action_open_run_screen(self) -> None:
+        self.app.push_screen(
+            RunScreen(
+                self._harness.store,
+                self._harness,
+                on_run_selected=self._attach_run_context,
+            )
+        )
+
     def _rebuild_system_message(self) -> None:
-        content = self._engine_ctx.prompt_builder.build(self._engine_ctx.env_info, mode=self._mode)
+        content = self._engine_ctx.prompt_builder.build(
+            self._engine_ctx.env_info,
+            mode=self._mode,
+            run_id=self._engine_ctx.current_run_id,
+        )
         if self._state.messages and self._state.messages[0].role == Role.SYSTEM:
             self._state.messages[0] = Message(role=Role.SYSTEM, content=content)
         else:
@@ -175,6 +201,10 @@ class ChatScreen(Screen[None]):
 
         if text.lower() == "/agents":
             self.action_open_agent_screen()
+            return
+
+        if text.lower() == "/runs":
+            self.action_open_run_screen()
             return
 
         if text.lower() == "/resume":
@@ -213,14 +243,16 @@ class ChatScreen(Screen[None]):
             "  [cyan]/mode[/]    切换 Plan/Build 模式\n"
             "  [cyan]/resume[/]  恢复最近一次 Run\n"
             "  [cyan]/cancel[/]  取消当前 Run\n"
+            "  [cyan]/runs[/]    打开 Run 时间线面板\n"
             "  [cyan]/agents[/]  管理子 Agent\n"
             "  [cyan]/exit[/]    退出程序\n\n"
             "[bold]快捷键:[/]\n"
             "  [dim]Tab[/]      切换 Plan/Build 模式\n"
             "  [dim]Ctrl+A[/]   打开 Agent 管理界面\n"
+            "  [dim]Ctrl+R[/]   打开 Run 时间线面板\n"
             "  [dim]Esc[/]      中断当前操作\n"
             "  [dim]Ctrl+P[/]   打开命令面板\n"
-            "  [dim]Shift+Enter[/] 换行\n\n"
+            "  [dim]Ctrl+Enter[/] / [dim]Shift+Enter[/] 换行\n\n"
             "[bold]补全:[/]\n"
             "  [dim]/[/]        输入 / 触发命令补全\n"
             "  [dim]@[/]        输入 @ 触发文件路径补全\n"
@@ -234,10 +266,20 @@ class ChatScreen(Screen[None]):
         await chat.add_system_message("[dim]聊天记录已清空[/]")
         self._state = QueryState(
             messages=[
-                Message(role=Role.SYSTEM, content=self._engine_ctx.prompt_builder.build(self._engine_ctx.env_info))
+                Message(
+                    role=Role.SYSTEM,
+                    content=self._engine_ctx.prompt_builder.build(
+                        self._engine_ctx.env_info,
+                        run_id=self._engine_ctx.current_run_id,
+                    ),
+                )
             ]
         )
         self._current_run = None
+        self._engine_ctx.current_run_id = None
+        self._current_text_step_id = None
+        self._current_step_had_output = False
+        self._last_announced_step_key = None
         self.query_one(StatusBar).clear_run()
         self.query_one(InputAreaType).focus()
 
@@ -269,11 +311,13 @@ class ChatScreen(Screen[None]):
         status = self.query_one(StatusBar)
 
         try:
+            self._refresh_engine_context()
             status.set_main_thinking(True)
             self._notify_spinner()
             await chat.add_user_message(user_text)
             steps = self._build_run_steps(user_text)
             self._current_run = await self._harness.run(user_text, steps=steps, metadata={"mode": self._mode})
+            self._engine_ctx.current_run_id = self._current_run.run_id
             if self._current_run.latest_query_state is not None:
                 self._state = self._current_run.latest_query_state
             if self._assistant_stream_open:
@@ -309,6 +353,7 @@ class ChatScreen(Screen[None]):
         status = self.query_one(StatusBar)
 
         try:
+            self._refresh_engine_context()
             status.set_main_thinking(True)
             self._notify_spinner()
             latest_run_id = self._harness.latest_run_id()
@@ -317,6 +362,7 @@ class ChatScreen(Screen[None]):
                 return
             await chat.add_system_message(f"[dim]恢复 Run {latest_run_id[:8]}[/]")
             self._current_run = await self._harness.resume(latest_run_id)
+            self._engine_ctx.current_run_id = self._current_run.run_id
             if self._current_run.latest_query_state is not None:
                 self._state = self._current_run.latest_query_state
             if self._assistant_stream_open:
@@ -370,7 +416,7 @@ class ChatScreen(Screen[None]):
                 agent_id=event.agent_id,
                 task_id=event.task_id,
                 success=event.success,
-                output=event.output,
+                output=event.output + ("\n[结果可能过期]" if event.is_stale else ""),
             )
             await chat.begin_assistant_message()
             self._refresh_agent_count()
@@ -390,9 +436,14 @@ class ChatScreen(Screen[None]):
 
     async def _on_query_event(self, event: Event, step: Step, run_state: RunState) -> None:
         chat = self.query_one(ChatArea)
+        if self._current_text_step_id != step.id:
+            self._current_text_step_id = step.id
+            self._current_step_had_output = False
         if not self._assistant_stream_open:
             await chat.begin_assistant_message()
             self._assistant_stream_open = True
+        if isinstance(event, TextDelta) and event.content:
+            self._current_step_had_output = True
         await self._handle_event(event, chat)
         self._update_run_status(run_state, step.title)
 
@@ -414,7 +465,16 @@ class ChatScreen(Screen[None]):
                 self._assistant_stream_open = False
             await chat.add_system_message(f"[dim]Run {run_state.run_id[:8]} 完成[/]")
         elif event.event_type == "step_started":
-            await chat.add_system_message(f"[dim]▶ {event.message}[/]")
+            step_key = (run_state.run_id, event.step_id or "")
+            if step_key != self._last_announced_step_key:
+                step = run_state.get_step(event.step_id or "")
+                retry_suffix = ""
+                if step is not None and step.retry_count > 0:
+                    retry_suffix = f" [dim](重试 {step.retry_count + 1})[/]"
+                await chat.add_system_message(f"[dim]▶ {event.message}[/]{retry_suffix}")
+                self._last_announced_step_key = step_key
+            self._current_text_step_id = event.step_id
+            self._current_step_had_output = False
         elif event.event_type == "step_completed":
             step = run_state.get_step(event.step_id or "")
             if step is not None and step.kind in {
@@ -424,9 +484,15 @@ class ChatScreen(Screen[None]):
                 StepKind.SUMMARIZE_PROGRESS,
                 StepKind.FINALIZE,
             }:
+                if not self._current_step_had_output and step.summary.strip():
+                    await chat.begin_assistant_message()
+                    await chat.append_assistant_text(step.summary)
+                    await chat.end_assistant_message()
                 if self._assistant_stream_open:
                     await chat.end_assistant_message()
                     self._assistant_stream_open = False
+                self._current_text_step_id = None
+                self._current_step_had_output = False
         elif event.event_type in {"run_failed", "run_timed_out"}:
             if self._assistant_stream_open:
                 await chat.end_assistant_message()
@@ -475,3 +541,22 @@ class ChatScreen(Screen[None]):
             phase=run_state.phase,
             step_title=step_title,
         )
+
+    def _refresh_engine_context(self) -> None:
+        refreshed = create_engine()
+        refreshed.mode = self._mode
+        refreshed.current_run_id = self._current_run.run_id if self._current_run is not None else None
+        self._engine_ctx = refreshed
+        self._harness = RunHarness.create_default(
+            engine_ctx=refreshed,
+            event_sink=self._on_harness_event,
+            query_event_sink=self._on_query_event,
+        )
+        self._rebuild_system_message()
+        self.query_one(StatusBar).update_info(self._mode, refreshed.env_info.model_name)
+
+    def _attach_run_context(self, run: RunState) -> None:
+        self._current_run = run
+        self._engine_ctx.current_run_id = run.run_id
+        self._rebuild_system_message()
+        self._update_run_status(run)

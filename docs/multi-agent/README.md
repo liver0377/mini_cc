@@ -12,10 +12,27 @@
 
 | 类型 | 用途 | 工具集 | 执行方式 | 文件隔离 | 回滚机制 |
 |------|------|--------|----------|----------|----------|
-| **写 Agent** (readonly=false) | 修改代码、修复 bug、重构 | 全量（file_edit, file_write, bash, file_read, glob, grep） | 同步阻塞 | 无，直写主工作区 | SnapshotService 文件快照 |
-| **只读 Agent** (readonly=true) | 探索代码库、分析架构、搜索代码 | 只读（file_read, glob, grep, bash） | 异步后台 | git worktree | 无（不修改文件） |
+| **写 Agent** (readonly=false) | 修改代码、修复 bug、重构 | 全量（file_edit, file_write, bash, file_read, glob, grep, scan_dir, plan_agents） | 同步阻塞 | 无，直写主工作区 | SnapshotService 文件快照 |
+| **只读 Agent** (readonly=true) | 探索代码库、分析架构、搜索代码 | 只读（file_read, glob, grep, bash, scan_dir, plan_agents） | 异步后台 | 无，共享主工作区（仅只读工具） | 无（不修改文件） |
 
 此外，写 Agent 支持 **Fork 模式**（fork=true）——深拷贝父 Agent 的完整对话上下文作为初始状态，继承父 Agent 的对话历史继续工作。Fork 模式仅对写 Agent 有意义，因为只读 Agent 不修改文件，无需继承上下文。
+
+### 并发冲突防护
+
+系统采用四层防护：
+
+| 层级 | 机制 | 说明 |
+|------|------|------|
+| Scope 隔离 | `_assert_write_scope_available()` | 新 write Agent 的 scope 与活跃 write Agent 无路径前缀重叠 |
+| 读写工具分离 | `create_readonly_registry()` | Readonly Agent 无 file_edit / file_write |
+| 文件快照 | `SnapshotService` | Write Agent 修改前自动备份，可 `restore_all()` 回滚 |
+| 工具串行 | `StreamingToolExecutor` | unsafe 工具（file_edit, file_write, bash）串行执行 |
+
+### 已知局限
+
+- **无文件系统级隔离**：所有 Agent 共享同一工作目录。Readonly Agent 可能看到 Write Agent 正在修改的中间状态。
+- **Staleness 检测是事后的**：版本戳（version stamp）在创建和完成时各取一次，只在完成事件中标记 `is_stale`，不自动重试。
+- **Readonly Agent 之间无一致性保证**：多个并行 Readonly Agent 如果在 Write Agent 活跃期间运行，可能对同一文件看到不同版本。
 
 ## 整体架构
 
@@ -32,9 +49,9 @@
         ┌──────────────┐                ┌──────────────┐
         │  写子 Agent   │                │ 只读子 Agent  │
         │  全量工具      │                │ 只读工具      │
-        │  直写主工作区  │                │ worktree 隔离 │
-        │  快照备份      │                │ 异步后台      │
-        │  同步阻塞      │                │               │
+        │  直写主工作区  │                │ 共享主工作区  │
+        │  快照备份      │                │ 版本戳校验    │
+        │  同步阻塞      │                │ 异步后台      │
         └──────┬───────┘                └──────┬───────┘
                │                               │
                │ 同步返回结果              异步通知
@@ -66,19 +83,14 @@
 
 直接写入主工作区，变更立即可见，无需合并步骤。这与 Codex CLI、Claude Code 的策略一致。省去了 worktree 创建、diff 收集、patch 应用的完整链路。
 
-### 为什么不用 git commit 做回滚
+### 为什么不用 git worktree 做隔离
 
-1. 不污染用户 git 历史——git log 不出现 agent commit，git status 只显示文件变更
-2. 避免 git add -A "偷走"用户未提交的变更
-3. 用户自主决定何时 commit，agent 不越权
+1. 只读 Agent 不修改文件，用 worktree 的主要收益（防止写冲突）不适用
+2. Worktree 的创建和销毁有延迟，与异步 Agent 的快速启停节奏不匹配
+3. 硬链接在部分文件系统（如 WSL 挂载的 Windows 盘）上有兼容问题
+4. 当前方案（读写工具分离 + scope 检查 + 版本戳）已能覆盖主要冲突场景
 
-系统选择**文件系统快照备份**——通过 SnapshotService 在工具执行前备份原始文件，回滚时从备份恢复，完全在应用层完成。
-
-### 为什么只读 Agent 仍用 worktree
-
-1. 多个只读 Agent 可并行运行，各自在独立 worktree 中互不干扰
-2. 只读 Agent 的 bash 命令可能产生副作用（如生成 \_\_pycache\_\_），worktree 隔离避免污染主工作区
-3. git worktree add 是硬链接，创建和销毁开销极小
+未来如果需要更强的隔离（如支持并行写），可以在 V2 阶段引入 per-agent 临时目录 + diff apply 机制。
 
 ## 文档索引
 

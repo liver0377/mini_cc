@@ -7,6 +7,15 @@ from textual.widgets import TextArea
 
 from mini_cc.tui.widgets.completion_popup import CompletionPopup
 
+_MIN_INPUT_HEIGHT = 3
+_MAX_INPUT_HEIGHT = 8
+
+
+def _height_for_text(text: str) -> int:
+    line_count = max(1, len(text.splitlines()) if text else 1)
+    desired = line_count + 2
+    return max(_MIN_INPUT_HEIGHT, min(_MAX_INPUT_HEIGHT, desired))
+
 
 class InputArea(TextArea):
     BINDINGS = [
@@ -20,10 +29,11 @@ class InputArea(TextArea):
         max-height: 8;
         min-height: 3;
         width: 1fr;
-        margin: 0 2;
+        margin: 0 2 1 2;
         border: tall #30363d;
         padding: 0 1;
         background: #0d1117;
+        layer: overlay;
     }
     InputArea:focus {
         border: tall #58a6ff;
@@ -45,12 +55,13 @@ class InputArea(TextArea):
             tab_behavior="indent",
             show_line_numbers=False,
             compact=True,
-            placeholder="输入消息... (Enter 发送, Shift+Enter 换行)",
+            placeholder="输入消息... (Enter 发送, Ctrl+Enter / Shift+Enter 换行)",
         )
         self._history: list[str] = []
         self._history_idx: int = -1
         self._draft: str = ""
         self._completion_mode: str | None = None
+        self._sync_height()
 
     def _get_popup(self) -> CompletionPopup | None:
         try:
@@ -118,10 +129,12 @@ class InputArea(TextArea):
                 self.post_message(self.Submitted(text))
                 self.text = ""
                 self.cursor_location = (0, 0)
+                self._sync_height()
             return
 
-        if event.key == "shift+enter":
+        if event.key in {"shift+enter", "ctrl+enter"}:
             self.insert("\n")
+            self._sync_height()
             event.prevent_default()
             return
 
@@ -134,6 +147,7 @@ class InputArea(TextArea):
                     self.text = self._history[self._history_idx]
                     end_loc = self.get_cursor_line_end_location()
                     self.cursor_location = end_loc
+                    self._sync_height()
             event.prevent_default()
             return
 
@@ -147,10 +161,12 @@ class InputArea(TextArea):
                     self.text = self._draft
                 end_loc = self.get_cursor_line_end_location()
                 self.cursor_location = end_loc
+                self._sync_height()
             event.prevent_default()
             return
 
         await super()._on_key(event)
+        self._sync_height()
         await self._check_completion_trigger()
 
     def _dismiss_if_invalid(self) -> None:
@@ -227,3 +243,7 @@ class InputArea(TextArea):
             if at_pos >= 0:
                 self.document.replace_range((line_idx, at_pos), (line_idx, col), text + " ")
                 self.cursor_location = (line_idx, at_pos + len(text) + 1)
+        self._sync_height()
+
+    def _sync_height(self) -> None:
+        self.styles.height = _height_for_text(self.text)

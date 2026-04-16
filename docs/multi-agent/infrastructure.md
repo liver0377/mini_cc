@@ -7,16 +7,13 @@
 | 子 Agent 类型 | 隔离方式 | 原因 |
 |---------------|----------|------|
 | 写 Agent | 无隔离，直写主工作区 + SnapshotService 快照备份 | 变更立即可见，无需合并 |
-| 只读 Agent | git worktree 硬链接 | 可并行运行，不污染主工作区 |
+| 只读 Agent | 无隔离，仅允许只读工具 + 版本戳校验 | 可并行运行，并在结果回流时标记是否过期 |
 
 ### 目录结构
 
 ```
 <project_root>/
 ├── .mini_cc/
-│   ├── worktrees/
-│   │   ├── a3f7b2c1/           只读 Agent 的 worktree
-│   │   └── f8e4d9c0/           只读 Agent 的 worktree
 │   ├── snapshots/
 │   │   └── d4e5f6a0/           写 Agent 的快照
 │   │       ├── _manifest.json
@@ -54,9 +51,9 @@ SnapshotService 为写 Agent 提供文件级快照备份，**不操作 git**。
 
 ### 并发安全
 
-- 写 Agent 强制串行（同步阻塞），直接操作主工作区，不会出现并发写冲突
-- 只读 Agent 可并行，各自在独立 worktree 中操作，互不干扰
-- .mini_cc/ 目录应加入 .gitignore（覆盖 worktrees/ 和 snapshots/）
+- 写 Agent 通过 scope lease 控制并发；scope 重叠时拒绝启动新的写 Agent
+- 只读 Agent 可并行，但运行前后都会记录版本戳，若主工作区发生变化则结果标记为 stale
+- .mini_cc/ 目录应加入 .gitignore（覆盖 snapshots/ 和 tasks/）
 
 ---
 
@@ -133,6 +130,9 @@ SnapshotService 为写 Agent 提供文件级快照备份，**不操作 git**。
 | success | 是否成功完成 |
 | output | 结果摘要（截断至 500 字符） |
 | output_path | 完整输出的文件路径 |
+| base_version_stamp | 子 Agent 启动时看到的工作区版本 |
+| completed_version_stamp | 子 Agent 完成时的工作区版本 |
+| is_stale | 若版本发生变化则为 true，表示结果可能过期 |
 
 ---
 

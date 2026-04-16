@@ -4,8 +4,8 @@ import os
 from unittest.mock import MagicMock
 
 from mini_cc.agent.manager import AgentManager
-from mini_cc.models import AgentConfig, AgentStatus
 from mini_cc.agent.sub_agent import SubAgent
+from mini_cc.models import AgentConfig, AgentStatus
 from mini_cc.tui.screens.agent_screen import _STATUS_COLORS, _STATUS_ICONS, AgentScreen
 
 
@@ -15,7 +15,7 @@ def _make_sub_agent(
     status: AgentStatus = AgentStatus.CREATED,
 ) -> MagicMock:
     agent = MagicMock(spec=SubAgent)
-    agent.config = AgentConfig(agent_id=agent_id, worktree_path="/tmp/wt")
+    agent.config = AgentConfig(agent_id=agent_id, workspace_path="/tmp/project")
     agent.task_id = task_id
     agent.status = status
     agent.state = MagicMock()

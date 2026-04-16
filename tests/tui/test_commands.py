@@ -41,6 +41,10 @@ class TestMatchCommands:
         results = match_commands("/取消")
         assert any(cmd.name == "/cancel" for cmd in results)
 
+    def test_description_keyword_runs(self):
+        results = match_commands("/时间线")
+        assert any(cmd.name == "/runs" for cmd in results)
+
     def test_description_keyword_exit(self):
         results = match_commands("/退出")
         assert any(cmd.name == "/exit" for cmd in results)

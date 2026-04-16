@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,6 +23,7 @@ from mini_cc.query_engine.engine import QueryEngine
 from mini_cc.task.service import TaskService
 
 if TYPE_CHECKING:
+    from mini_cc.agent.bus import AgentEventBus
     from mini_cc.agent.snapshot import SnapshotService
 
 
@@ -38,6 +39,8 @@ class SubAgent:
         output_dir: Path,
         snapshot_svc: SnapshotService | None = None,
         event_queue: asyncio.Queue[Event] | None = None,
+        version_provider: Callable[[], str] | None = None,
+        lifecycle_bus: AgentEventBus | None = None,
     ) -> None:
         self._config = config
         self._engine = engine
@@ -48,9 +51,12 @@ class SubAgent:
         self._output_dir = output_dir
         self.snapshot_svc = snapshot_svc
         self._event_queue = event_queue
+        self._version_provider = version_provider
+        self._lifecycle_bus = lifecycle_bus
         self._status = AgentStatus.CREATED
         self._cancel_event = asyncio.Event()
         self._collected_output: list[str] = []
+        self._completed_version_stamp = config.base_version_stamp
 
     @property
     def config(self) -> AgentConfig:
@@ -67,6 +73,10 @@ class SubAgent:
     @property
     def state(self) -> QueryState:
         return self._state
+
+    @property
+    def completed_version_stamp(self) -> str:
+        return self._completed_version_stamp
 
     async def run(self, prompt: str) -> AsyncGenerator[Event, None]:
         self._status = AgentStatus.RUNNING
@@ -145,6 +155,10 @@ class SubAgent:
                 await self._task_service.fail(self._task_id, error=error)
 
         output_path = self._write_output(output_text, success=success)
+        if self._version_provider is not None:
+            self._completed_version_stamp = self._version_provider()
+        else:
+            self._completed_version_stamp = self._config.base_version_stamp
 
         completion_event = AgentCompletionEvent(
             agent_id=self._config.agent_id,
@@ -152,8 +166,23 @@ class SubAgent:
             success=success,
             output=truncated,
             output_path=output_path,
+            base_version_stamp=self._config.base_version_stamp,
+            completed_version_stamp=self._completed_version_stamp,
+            is_stale=self._config.base_version_stamp != self._completed_version_stamp,
         )
         await self._completion_queue.put(completion_event)
+
+        if self._lifecycle_bus is not None:
+            event_type = "completed" if success else "cancelled"
+            from mini_cc.agent.bus import AgentLifecycleEvent
+
+            self._lifecycle_bus.publish_nowait(
+                AgentLifecycleEvent(
+                    event_type=event_type,
+                    agent_id=self._config.agent_id,
+                    success=success,
+                )
+            )
 
     def _write_output(self, output: str, *, success: bool) -> str:
         self._output_dir.mkdir(parents=True, exist_ok=True)
@@ -169,7 +198,7 @@ class SubAgent:
         return str(output_path)
 
 
-def build_worktree_notice(config: AgentConfig, project_root: Path) -> str:
+def build_workspace_notice(config: AgentConfig, project_root: Path) -> str:
     return (
         f"你继承了父代理在 {project_root} 的对话上下文。\n"
         f"你直接操作主工作区 {project_root}，无需路径翻译。\n"

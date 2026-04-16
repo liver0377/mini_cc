@@ -22,7 +22,7 @@ Mini Claude Code aims to build a lightweight, extensible command-line coding age
 - [x] Multi-agent collaboration & communication (AgentManager, SubAgent, event system)
 - [x] File Tool, Shell Tool, Glob/Grep search tools
 - [x] TUI interface (Textual: chat area, collapsible tool results, agent management panel, status bar)
-- [x] Sub-Agent worktree isolation
+- [x] Sub-Agent scope leases + readonly staleness detection
 - [x] File snapshot rollback (SnapshotService)
 - [ ] snapshot rollback trigger
 - [x] Plan/Build mode switching (Tab key)

@@ -58,6 +58,7 @@ class TestStatusBarDisplay:
         sb.update_info("build", "test-model")
         rendered = sb._build_display_text()
         assert "Ctrl+A" in rendered
+        assert "Ctrl+R" in rendered
 
     def test_run_info_shown_when_present(self):
         sb = StatusBar()

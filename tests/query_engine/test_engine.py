@@ -5,7 +5,6 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from mini_cc.context.tool_use import ToolUseContext
-from mini_cc.query_engine.engine import QueryEngine
 from mini_cc.models import (
     AgentCompletionEvent,
     AgentStartEvent,
@@ -22,6 +21,7 @@ from mini_cc.models import (
     ToolCallStart,
     ToolResultEvent,
 )
+from mini_cc.query_engine.engine import QueryEngine
 
 
 async def _stream_text_only(messages: list[Message], tools: list[dict[str, Any]]) -> AsyncGenerator[Event, None]:
@@ -89,6 +89,17 @@ class TestQueryEngineTextOnly:
 
         assert not any(isinstance(e, ToolResultEvent) for e in events)
 
+    async def test_text_only_updates_state(self) -> None:
+        engine = QueryEngine(stream_fn=_stream_text_only, tool_use_ctx=_make_ctx())
+        _ = [e async for e in engine.submit_message("hi")]
+
+        assert engine.state is not None
+        assert engine.state.turn_count == 1
+        assert len(engine.state.messages) == 2
+        assert engine.state.messages[0].role == Role.USER
+        assert engine.state.messages[1].role == Role.ASSISTANT
+        assert engine.state.messages[1].content == "Hello!"
+
 
 class TestQueryEngineSingleToolCall:
     async def test_yields_text_and_tool_events(self) -> None:
@@ -108,7 +119,7 @@ class TestQueryEngineSingleToolCall:
         _ = [e async for e in engine.submit_message("read file")]
 
         assert engine.state is not None
-        assert engine.state.turn_count == 1
+        assert engine.state.turn_count == 2
 
 
 class TestQueryEngineMultiTurn:
@@ -124,7 +135,7 @@ class TestQueryEngineMultiTurn:
         _ = [e async for e in engine.submit_message("run twice")]
 
         assert engine.state is not None
-        assert engine.state.turn_count == 2
+        assert engine.state.turn_count == 3
 
 
 class TestQueryEnginePermissionDenied:
@@ -222,24 +233,28 @@ class TestQueryEngineExistingState:
         assert len(events) == 1
         assert isinstance(events[0], TextDelta)
         assert engine.state is state
-        assert len(state.messages) == 2
+        assert len(state.messages) == 3
         assert state.messages[0].role == Role.SYSTEM
         assert state.messages[1].role == Role.USER
         assert state.messages[1].content == "hi"
+        assert state.messages[2].role == Role.ASSISTANT
+        assert state.messages[2].content == "Hello!"
 
     async def test_multi_turn_accumulates_messages(self) -> None:
         engine = QueryEngine(stream_fn=_stream_single_tool_then_text, tool_use_ctx=_make_ctx())
 
         state = QueryState()
         _ = [e async for e in engine.submit_message("first", state=state)]
-        assert len(state.messages) == 3
+        assert len(state.messages) == 4
         assert state.messages[0].role == Role.USER
         assert state.messages[0].content == "first"
 
         _ = [e async for e in engine.submit_message("second", state=state)]
-        assert len(state.messages) == 4
-        assert state.messages[3].role == Role.USER
-        assert state.messages[3].content == "second"
+        assert len(state.messages) == 6
+        assert state.messages[4].role == Role.USER
+        assert state.messages[4].content == "second"
+        assert state.messages[5].role == Role.ASSISTANT
+        assert state.messages[5].content == "Done!"
 
     async def test_existing_state_with_tool_call(self) -> None:
         engine = QueryEngine(stream_fn=_stream_single_tool_then_text, tool_use_ctx=_make_ctx())
@@ -251,12 +266,13 @@ class TestQueryEngineExistingState:
         assert len(user_msgs) == 1
 
         assistant_msgs = [m for m in state.messages if m.role == Role.ASSISTANT]
-        assert len(assistant_msgs) == 1
+        assert len(assistant_msgs) == 2
         assert len(assistant_msgs[0].tool_calls) == 1
+        assert assistant_msgs[1].content == "Done!"
 
         tool_msgs = [m for m in state.messages if m.role == Role.TOOL]
         assert len(tool_msgs) == 1
-        assert state.turn_count == 1
+        assert state.turn_count == 2
 
 
 class TestQueryEngineCompletionQueue:

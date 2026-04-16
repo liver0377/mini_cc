@@ -17,6 +17,7 @@ BUILTIN_COMMANDS: list[SlashCommand] = [
     SlashCommand("/mode", "切换 Plan/Build 模式", "/mode"),
     SlashCommand("/resume", "恢复最近一次 Run", "/resume"),
     SlashCommand("/cancel", "取消当前 Run", "/cancel"),
+    SlashCommand("/runs", "打开 Run 时间线面板", "/runs"),
     SlashCommand("/agents", "管理子 Agent", "/agents"),
     SlashCommand("/exit", "退出程序", "/exit"),
 ]

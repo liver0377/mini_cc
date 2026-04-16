@@ -76,11 +76,12 @@ def render_event(event: Event, *, console: Console | None = None) -> None:
 
     elif isinstance(event, AgentCompletionEvent):
         status_marker = "[bold green]✓[/]" if event.success else "[bold red]✗[/]"
+        stale_label = " [yellow](结果可能过期)[/]" if event.is_stale else ""
         _print(
             Text.from_markup(
                 f"  {status_marker} [magenta]子 Agent {event.agent_id}[/]"
                 f" [dim](Task #{event.task_id})[/]"
-                f" {'完成' if event.success else '失败'}"
+                f" {'完成' if event.success else '失败'}{stale_label}"
             )
         )
         if event.output:

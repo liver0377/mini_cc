@@ -50,6 +50,20 @@ class PolicyEngine:
                 terminal_status=RunStatus.FAILED,
             )
 
+        if run_state.active_agent_count > run_state.budget.max_active_agents * 2:
+            return PolicyDecision(
+                action=PolicyAction.BLOCK,
+                reason="active agent limit exceeded",
+                terminal_status=RunStatus.BLOCKED,
+            )
+
+        if run_state.active_write_agent_count > 1:
+            return PolicyDecision(
+                action=PolicyAction.BLOCK,
+                reason="multiple active write agents are not allowed",
+                terminal_status=RunStatus.BLOCKED,
+            )
+
         return None
 
     def evaluate_step(self, run_state: RunState, step: Step, result: StepResult, health: RunHealth) -> PolicyDecision:
@@ -62,6 +76,12 @@ class PolicyEngine:
 
         if result.success:
             if health == RunHealth.STALLED and step.kind != StepKind.MAKE_PLAN:
+                if run_state.replan_count >= 3:
+                    return PolicyDecision(
+                        action=PolicyAction.FAIL,
+                        reason="replan limit exceeded",
+                        terminal_status=RunStatus.FAILED,
+                    )
                 return PolicyDecision(
                     action=PolicyAction.REPLAN,
                     reason="no progress detected after successful step",
@@ -72,13 +92,31 @@ class PolicyEngine:
                             goal="Generate a revised plan based on the latest run state.",
                         )
                     ],
-                )
+            )
             return PolicyDecision(action=PolicyAction.CONTINUE, reason="step succeeded")
 
         if step.retry_count < run_state.retry_policy.max_step_retries and result.retryable:
             return PolicyDecision(action=PolicyAction.RETRY, reason="step failed but retry budget remains")
 
+        if step.kind in {StepKind.RUN_TESTS, StepKind.INSPECT_FAILURES} and health != RunHealth.BLOCKED:
+            if run_state.replan_count >= 3:
+                return PolicyDecision(
+                    action=PolicyAction.FAIL,
+                    reason="replan limit exceeded",
+                    terminal_status=RunStatus.FAILED,
+                )
+            return PolicyDecision(
+                action=PolicyAction.REPLAN,
+                reason="verification failed; gather diagnostics and replan",
+            )
+
         if health == RunHealth.STALLED and step.kind != StepKind.MAKE_PLAN:
+            if run_state.replan_count >= 3:
+                return PolicyDecision(
+                    action=PolicyAction.FAIL,
+                    reason="replan limit exceeded",
+                    terminal_status=RunStatus.FAILED,
+                )
             return PolicyDecision(
                 action=PolicyAction.REPLAN,
                 reason="step failed without progress; replan requested",

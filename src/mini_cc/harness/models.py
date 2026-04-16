@@ -43,6 +43,7 @@ class StepKind(StrEnum):
     MAKE_PLAN = "make_plan"
     EDIT_CODE = "edit_code"
     RUN_TESTS = "run_tests"
+    RUN_TASK_AUDIT = "run_task_audit"
     INSPECT_FAILURES = "inspect_failures"
     SPAWN_READONLY_AGENT = "spawn_readonly_agent"
     SUMMARIZE_PROGRESS = "summarize_progress"
@@ -64,6 +65,25 @@ class RunHealth(StrEnum):
     STALLED = "stalled"
     BLOCKED = "blocked"
     REGRESSING = "regressing"
+
+
+class AgentTrace(BaseModel):
+    agent_id: str
+    source_step_id: str | None = None
+    readonly: bool = False
+    scope_paths: list[str] = Field(default_factory=list)
+    created_at: str = Field(default_factory=utc_now_iso)
+    completed_at: str | None = None
+    success: bool | None = None
+    termination_reason: str | None = None
+    invalidated_on_resume: bool = False
+
+
+class AgentBudget(BaseModel):
+    max_readonly: int = 5
+    max_write: int = 1
+    remaining_readonly: int = 5
+    remaining_write: int = 1
 
 
 class RunBudget(BaseModel):
@@ -138,16 +158,32 @@ class RunState(BaseModel):
     consecutive_no_progress_count: int = 0
     test_run_count: int = 0
     bash_command_count: int = 0
+    spawned_agents: list[AgentTrace] = Field(default_factory=list)
+    agent_budget: AgentBudget | None = None
+    replan_count: int = 0
     metadata: dict[str, str] = Field(default_factory=dict)
 
     @property
     def is_terminal(self) -> bool:
         return self.status in {
+            RunStatus.BLOCKED,
             RunStatus.COMPLETED,
             RunStatus.FAILED,
             RunStatus.CANCELLED,
             RunStatus.TIMED_OUT,
         }
+
+    @property
+    def active_agent_count(self) -> int:
+        return sum(1 for a in self.spawned_agents if a.completed_at is None)
+
+    @property
+    def active_readonly_agent_count(self) -> int:
+        return sum(1 for a in self.spawned_agents if a.completed_at is None and a.readonly)
+
+    @property
+    def active_write_agent_count(self) -> int:
+        return sum(1 for a in self.spawned_agents if a.completed_at is None and not a.readonly)
 
     def touch(self) -> None:
         self.updated_at = utc_now_iso()

@@ -3,7 +3,6 @@ from __future__ import annotations
 import secrets
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
 
 from pydantic import BaseModel
 
@@ -22,15 +21,13 @@ def generate_agent_id() -> str:
 
 class AgentConfig(BaseModel):
     agent_id: str
-    worktree_path: str
+    workspace_path: str
     is_fork: bool = False
     is_readonly: bool = False
     parent_agent_id: str | None = None
     timeout_seconds: int = 120
-
-    @property
-    def worktree(self) -> Path:
-        return Path(self.worktree_path)
+    scope_paths: list[str] = []
+    base_version_stamp: str = ""
 
 
 @dataclass(frozen=True)

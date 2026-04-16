@@ -207,9 +207,11 @@ class AgentScreen(Screen[None]):
         content_parts: list[str] = [
             f"[bold #58a6ff]Agent {config.agent_id}[/]  [dim]Task #{agent.task_id}[/]",
             f"  状态: {_STATUS_ICONS.get(agent.status, '?')} {agent.status.value}",
-            f"  Worktree: {config.worktree_path}",
+            f"  Workspace: {config.workspace_path}",
             f"  Fork: {'是' if config.is_fork else '否'}",
             f"  父 Agent: {config.parent_agent_id or '(无)'}",
+            f"  Scope: {', '.join(config.scope_paths) if config.scope_paths else '(未声明)'}",
+            f"  Base Version: {config.base_version_stamp or '(无)'}",
             f"  消息数: {len(agent.state.messages)}",
         ]
 

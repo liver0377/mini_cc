@@ -69,6 +69,9 @@ class AgentCompletionEvent:
     success: bool
     output: str
     output_path: str
+    base_version_stamp: str = ""
+    completed_version_stamp: str = ""
+    is_stale: bool = False
 
 
 @dataclass

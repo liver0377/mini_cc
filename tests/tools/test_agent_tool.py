@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
+from mini_cc.harness import AgentBudget
 from mini_cc.models import (
     AgentConfig,
     AgentStartEvent,
@@ -29,7 +31,7 @@ def _make_agent_mock(
     agent = MagicMock()
     agent.config = AgentConfig(
         agent_id=agent_id,
-        worktree_path="/tmp/wt",
+        workspace_path="/tmp/project",
         is_readonly=readonly,
     )
     agent.task_id = task_id
@@ -68,6 +70,7 @@ class TestAgentToolInput:
         assert inp.prompt == "do something"
         assert inp.readonly is False
         assert inp.fork is False
+        assert inp.dispatch_plan_json is None
 
     def test_readonly_mode(self):
         inp = AgentToolInput(prompt="explore code", readonly=True)
@@ -174,6 +177,80 @@ class TestReadonlyExecution:
 
         call_kwargs = manager.create_agent.call_args
         assert call_kwargs.kwargs.get("readonly") is True
+
+    async def test_dispatch_plan_creates_multiple_readonly_agents(self):
+        tool, manager, _ = _make_tool()
+        manager.create_agent = AsyncMock(
+            side_effect=[
+                _make_agent_mock(agent_id="agent-1", task_id=1, readonly=True),
+                _make_agent_mock(agent_id="agent-2", task_id=2, readonly=True),
+            ]
+        )
+        dispatch_plan = json.dumps(
+            {
+                "goal": "分析项目",
+                "root": "/tmp/project",
+                "recommended_agent_count": 2,
+                "dispatch_plan": [
+                    {"index": 1, "scope": "src/agent", "mode": "readonly", "prompt": "analyze agent"},
+                    {"index": 2, "scope": "src/tui", "mode": "readonly", "prompt": "analyze tui"},
+                ],
+                "overflow_scopes": [],
+            }
+        )
+
+        result = await tool.async_execute(dispatch_plan_json=dispatch_plan)
+        payload = json.loads(result.output)
+
+        assert result.success is True
+        assert payload["created_count"] == 2
+        assert payload["agents"][0]["agent_id"] == "agent-1"
+        assert manager.create_agent.await_count == 2
+
+    async def test_dispatch_plan_rejects_non_readonly_mode(self):
+        tool, manager, _ = _make_tool()
+        dispatch_plan = json.dumps(
+            {
+                "goal": "修改项目",
+                "root": "/tmp/project",
+                "recommended_agent_count": 1,
+                "dispatch_plan": [
+                    {"index": 1, "scope": ".", "mode": "build", "prompt": "edit code"},
+                ],
+                "overflow_scopes": [],
+            }
+        )
+
+        result = await tool.async_execute(dispatch_plan_json=dispatch_plan)
+
+        assert result.success is False
+        assert "仅支持 readonly agent" in result.output
+        manager.create_agent.assert_not_called()
+
+    async def test_empty_prompt_without_plan_fails(self):
+        tool, manager, _ = _make_tool()
+
+        result = await tool.async_execute(prompt="")
+
+        assert result.success is False
+        assert "prompt 不能为空" in result.output
+        manager.create_agent.assert_not_called()
+
+    async def test_write_budget_exhausted_blocks_new_write_agent(self):
+        manager = AsyncMock()
+        state_fn = MagicMock(return_value=QueryState())
+        budget = AgentBudget(remaining_readonly=3, remaining_write=0)
+        tool = AgentTool(
+            manager=manager,
+            get_parent_state=state_fn,
+            get_budget=lambda: budget,
+        )
+
+        result = await tool.async_execute(prompt="edit code", readonly=False)
+
+        assert result.success is False
+        assert "写 Agent 预算已耗尽" in result.output
+        manager.create_agent.assert_not_called()
 
 
 class TestAgentToolEventQueue:

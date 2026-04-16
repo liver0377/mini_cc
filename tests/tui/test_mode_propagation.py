@@ -15,25 +15,6 @@ async def _noop_stream(messages, schemas):
     yield TextDelta(content="done")
 
 
-def _make_worktree_svc(tmp_path):
-    from mini_cc.agent.worktree import WorktreeService
-
-    svc = MagicMock(spec=WorktreeService)
-    wt_base = tmp_path / "project" / ".mini_cc" / "worktrees"
-    out_base = tmp_path / "project" / ".mini_cc" / "tasks"
-
-    def _create(agent_id, ref="HEAD"):
-        wt = wt_base / agent_id
-        wt.mkdir(parents=True, exist_ok=True)
-        return wt
-
-    svc.create = _create
-    svc.remove = MagicMock()
-    svc.cleanup_output = MagicMock()
-    svc.output_dir = out_base
-    return svc
-
-
 def _make_env_info() -> EnvInfo:
     return EnvInfo(
         working_directory="/tmp/test",
@@ -52,7 +33,7 @@ def _make_tool_agent_mock(
     events: list[Event] | None = None,
 ) -> MagicMock:
     agent = MagicMock()
-    agent.config = AgentConfig(agent_id=agent_id, worktree_path="/tmp/wt")
+    agent.config = AgentConfig(agent_id=agent_id, workspace_path="/tmp/project")
     agent.task_id = task_id
     default_events: list[Event] = events or [TextDelta(content="done")]
 
@@ -80,7 +61,6 @@ class TestModePropagation:
             stream_fn=_noop_stream,
             task_service=task_service,
             completion_queue=completion_queue,
-            worktree_service=_make_worktree_svc(tmp_path),
             prompt_builder=prompt_builder,
             env_info=env_info,
         )
@@ -104,7 +84,6 @@ class TestModePropagation:
             stream_fn=_noop_stream,
             task_service=task_service,
             completion_queue=completion_queue,
-            worktree_service=_make_worktree_svc(tmp_path),
             prompt_builder=prompt_builder,
             env_info=env_info,
         )
@@ -126,7 +105,6 @@ class TestModePropagation:
             stream_fn=_noop_stream,
             task_service=task_service,
             completion_queue=completion_queue,
-            worktree_service=_make_worktree_svc(tmp_path),
         )
 
         agent = await manager.create_agent(prompt="no pb")

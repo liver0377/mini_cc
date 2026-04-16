@@ -8,7 +8,7 @@ from typing import Any
 from mini_cc.models import ToolCall, ToolResultEvent
 from mini_cc.tools.base import BaseTool
 
-_SAFE_TOOL_NAMES = {"file_read", "glob", "grep"}
+_SAFE_TOOL_NAMES = {"file_read", "glob", "grep", "scan_dir", "plan_agents"}
 
 PreExecuteHook = Callable[[str, dict[str, Any]], None]
 

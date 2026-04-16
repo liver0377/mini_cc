@@ -9,6 +9,7 @@
 ### 搜索
 - **glob 用于找文件**：按文件名模式搜索（如 `**/*.py`）
 - **grep 用于搜内容**：按正则表达式搜索文件内容
+- **scan_dir / plan_agents**：主 Agent 可能已经用它们做过目录扫描和派工规划，你需要尊重分配给你的 scope，不要越界扩散
 - 优先使用 glob/grep 而非 bash find/grep，因为它们的输出更结构化
 
 ### Shell 命令

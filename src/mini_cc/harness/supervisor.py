@@ -4,10 +4,22 @@ import inspect
 import secrets
 from collections.abc import Awaitable, Callable
 
+from mini_cc.agent.bus import AgentEventBus, AgentLifecycleEvent
 from mini_cc.harness.checkpoint import CheckpointStore
+from mini_cc.harness.doc_generator import RunDocGenerator
 from mini_cc.harness.events import HarnessEvent
+from mini_cc.harness.iteration import IterationOptimizer
 from mini_cc.harness.judge import RunJudge
-from mini_cc.harness.models import RunState, RunStatus, Step, StepKind, StepResult, StepStatus
+from mini_cc.harness.models import (
+    AgentTrace,
+    RunState,
+    RunStatus,
+    Step,
+    StepKind,
+    StepResult,
+    StepStatus,
+    utc_now_iso,
+)
 from mini_cc.harness.policy import PolicyAction, PolicyDecision, PolicyEngine
 from mini_cc.harness.step_runner import StepRunner
 
@@ -22,13 +34,19 @@ class SupervisorLoop:
         step_runner: StepRunner,
         policy_engine: PolicyEngine | None = None,
         judge: RunJudge | None = None,
+        iteration_optimizer: IterationOptimizer | None = None,
+        doc_generator: RunDocGenerator | None = None,
         event_sink: HarnessEventSink | None = None,
+        lifecycle_bus: AgentEventBus | None = None,
     ) -> None:
         self._store = store
         self._step_runner = step_runner
         self._policy = policy_engine or PolicyEngine()
         self._judge = judge or RunJudge()
+        self._iteration = iteration_optimizer or IterationOptimizer()
+        self._doc_generator = doc_generator or RunDocGenerator()
         self._event_sink = event_sink
+        self._lifecycle_bus = lifecycle_bus
 
     async def run(self, run_state: RunState) -> RunState:
         if run_state.started_at is None:
@@ -47,6 +65,7 @@ class SupervisorLoop:
             self._store.save_state(run_state)
 
         while not run_state.is_terminal:
+            self._drain_and_update_agents(run_state)
             limit_decision = self._policy.check_run_limits(run_state)
             if limit_decision is not None:
                 self._apply_terminal_decision(run_state, limit_decision)
@@ -79,14 +98,27 @@ class SupervisorLoop:
                     run_id=run_state.run_id,
                     step_id=step.id,
                     message=step.title,
-                    data={"kind": step.kind.value},
+                    data={
+                        "kind": step.kind.value,
+                        "active_agents": str(run_state.active_agent_count),
+                        "failure_count": str(run_state.failure_count),
+                        "no_progress_count": str(run_state.consecutive_no_progress_count),
+                        "replan_count": str(run_state.replan_count),
+                    },
                 ),
                 run_state,
             )
             self._store.save_state(run_state)
 
+            self._set_step_context(step)
             result = await self._step_runner.run_step(step, run_state)
+            self._clear_step_context()
+            self._drain_and_update_agents(run_state)
+
             artifact_paths = self._save_artifacts(run_state, step, result.artifacts)
+            previous_snapshot = self._store.latest_iteration_snapshot(run_state.run_id)
+            snapshot = self._iteration.capture(run_state, step, result, artifact_paths)
+            review = self._iteration.review(snapshot, previous_snapshot)
 
             step.summary = result.summary
             step.evaluation = result.summary
@@ -99,28 +131,39 @@ class SupervisorLoop:
 
             if step.kind == StepKind.RUN_TESTS:
                 run_state.test_run_count += 1
+                run_state.bash_command_count += 1
                 run_state.status = RunStatus.VERIFYING
+            elif step.kind == StepKind.INSPECT_FAILURES:
+                run_state.bash_command_count += 1
+                run_state.status = RunStatus.RUNNING
             elif step.kind == StepKind.EDIT_CODE:
                 run_state.status = RunStatus.RUNNING
 
             if result.success:
                 run_state.failure_count = 0
-                run_state.consecutive_no_progress_count = 0 if result.progress_made else (
-                    run_state.consecutive_no_progress_count + 1
+                run_state.consecutive_no_progress_count = (
+                    0 if result.progress_made else (run_state.consecutive_no_progress_count + 1)
                 )
             else:
                 run_state.failure_count += 1
                 run_state.consecutive_no_progress_count += 0 if result.progress_made else 1
-                if step.kind in {StepKind.RUN_TESTS, StepKind.INSPECT_FAILURES}:
-                    run_state.bash_command_count += 1
 
             health = self._judge.assess(run_state, step, result)
             decision = self._policy.evaluate_step(run_state, step, result, health)
+            generated_steps = self._iteration.apply_review(run_state, step, result, review)
+            self._store.append_iteration_snapshot(snapshot)
+            self._store.append_iteration_review(review)
+            self._store.append_journal_entry(
+                run_state.run_id,
+                self._iteration.format_journal_entry(snapshot, review, generated_steps + decision.insert_steps),
+            )
             self._apply_step_decision(run_state, step, result, decision)
 
             next_steps = list(result.next_steps)
+            next_steps.extend(generated_steps)
             next_steps.extend(decision.insert_steps)
             if next_steps:
+                next_steps = self._iteration.apply_constraints_to_steps(next_steps, review)
                 self._append_generated_steps(run_state, next_steps)
 
             run_state.current_step_id = None
@@ -137,6 +180,12 @@ class SupervisorLoop:
                         "success": str(result.success).lower(),
                         "health": health.value,
                         "decision": decision.action.value,
+                        "decision_reason": decision.reason,
+                        "active_agents": str(run_state.active_agent_count),
+                        "failure_count": str(run_state.failure_count),
+                        "no_progress_count": str(run_state.consecutive_no_progress_count),
+                        "replan_count": str(run_state.replan_count),
+                        "inserted_steps": ",".join(next_step.kind.value for next_step in next_steps),
                     },
                 ),
                 run_state,
@@ -144,6 +193,7 @@ class SupervisorLoop:
             self._store.save_state(run_state)
             self._store.save_checkpoint(run_state, f"step-{step.id}")
 
+        self._finalize_terminal_run(run_state)
         return run_state
 
     def _select_next_step(self, run_state: RunState) -> Step | None:
@@ -174,6 +224,7 @@ class SupervisorLoop:
             step.status = StepStatus.PENDING
             step.retry_count += 1
         elif decision.action == PolicyAction.REPLAN:
+            run_state.replan_count += 1
             step.status = StepStatus.FAILED_RETRYABLE if not result.success else StepStatus.SUCCEEDED
             if result.success and step.id not in run_state.completed_step_ids:
                 run_state.completed_step_ids.append(step.id)
@@ -210,10 +261,24 @@ class SupervisorLoop:
             run_state.phase = "timed_out"
             event_type = "run_timed_out"
         else:
-            run_state.phase = "failed"
+            run_state.phase = run_state.status.value
             event_type = "run_failed"
         run_state.touch()
-        self._store.append_event(HarnessEvent(event_type=event_type, run_id=run_state.run_id, message=decision.reason))
+        self._store.append_event(
+            HarnessEvent(
+                event_type=event_type,
+                run_id=run_state.run_id,
+                message=decision.reason,
+                data={
+                    "decision": decision.action.value,
+                    "decision_reason": decision.reason,
+                    "active_agents": str(run_state.active_agent_count),
+                    "failure_count": str(run_state.failure_count),
+                    "no_progress_count": str(run_state.consecutive_no_progress_count),
+                    "replan_count": str(run_state.replan_count),
+                },
+            )
+        )
         self._store.save_state(run_state)
 
     async def _emit_event(self, event: HarnessEvent, run_state: RunState) -> None:
@@ -239,3 +304,66 @@ class SupervisorLoop:
                 step.id = f"step-{secrets.token_hex(4)}"
             normalized.append(step)
         run_state.steps[insert_at:insert_at] = normalized
+
+    def _set_step_context(self, step: Step) -> None:
+        if self._step_runner._engine_ctx is None:
+            return
+        mgr = self._step_runner._engine_ctx.agent_manager
+        if mgr is not None:
+            mgr.set_current_step(step.id)
+
+    def _clear_step_context(self) -> None:
+        if self._step_runner._engine_ctx is None:
+            return
+        mgr = self._step_runner._engine_ctx.agent_manager
+        if mgr is not None:
+            mgr.clear_current_step()
+
+    def _drain_and_update_agents(self, run_state: RunState) -> None:
+        if self._lifecycle_bus is None:
+            return
+        events = self._lifecycle_bus.drain()
+        self._update_spawned_agents(run_state, events)
+
+    def _update_spawned_agents(self, run_state: RunState, events: list[AgentLifecycleEvent]) -> None:
+        for event in events:
+            if event.event_type == "created":
+                trace = AgentTrace(
+                    agent_id=event.agent_id,
+                    source_step_id=event.source_step_id,
+                    readonly=event.readonly,
+                    scope_paths=event.scope_paths or [],
+                )
+                run_state.spawned_agents.append(trace)
+            elif event.event_type in {"completed", "cancelled"}:
+                for trace in run_state.spawned_agents:
+                    if trace.agent_id == event.agent_id and trace.completed_at is None:
+                        trace.completed_at = utc_now_iso()
+                        trace.success = event.success
+                        break
+        self._refresh_agent_metrics(run_state)
+
+    def _finalize_terminal_run(self, run_state: RunState) -> None:
+        if not run_state.is_terminal:
+            return
+        self._refresh_agent_metrics(run_state)
+        documentation = self._doc_generator.generate(run_state, self._store)
+        path = self._store.save_documentation(run_state.run_id, documentation)
+        run_state.artifacts["Documentation.md"] = str(path)
+        run_state.touch()
+        self._store.save_state(run_state)
+
+    def _refresh_agent_metrics(self, run_state: RunState) -> None:
+        readonly_created = sum(1 for trace in run_state.spawned_agents if trace.readonly)
+        write_created = sum(1 for trace in run_state.spawned_agents if not trace.readonly)
+        succeeded = sum(1 for trace in run_state.spawned_agents if trace.success is True)
+        failed = sum(1 for trace in run_state.spawned_agents if trace.success is False)
+        peak_active = max(
+            run_state.active_agent_count,
+            int(run_state.metadata.get("agent_peak_active", "0")),
+        )
+        run_state.metadata["agents_created_readonly"] = str(readonly_created)
+        run_state.metadata["agents_created_write"] = str(write_created)
+        run_state.metadata["agents_succeeded"] = str(succeeded)
+        run_state.metadata["agents_failed"] = str(failed)
+        run_state.metadata["agent_peak_active"] = str(peak_active)
