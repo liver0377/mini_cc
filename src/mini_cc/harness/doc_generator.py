@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from mini_cc.harness.audit import TaskAuditRegistry
 from mini_cc.harness.checkpoint import CheckpointStore
 from mini_cc.harness.events import HarnessEvent
 from mini_cc.harness.iteration import IterationOutcome, IterationReview, IterationSnapshot
-from mini_cc.harness.models import RunState, StepKind, StepStatus, TraceSpan, format_local_time
-from mini_cc.harness.task_audit import TaskAuditRegistry
+from mini_cc.harness.models import RunState, SchedulerDecisionRecord, StepKind, StepStatus, TraceSpan, format_local_time
 
 
 class RunDocGenerator:
@@ -17,6 +17,7 @@ class RunDocGenerator:
         events = store.load_events(run_state.run_id)
         snapshots = store.load_iteration_snapshots(run_state.run_id)
         reviews = store.load_iteration_reviews(run_state.run_id)
+        scheduler_decisions = store.load_scheduler_decisions(run_state.run_id)
         trace_spans = store.load_trace_spans(run_state.run_id)
         review_map = {review.step_id: review for review in reviews}
 
@@ -25,6 +26,7 @@ class RunDocGenerator:
             self._render_step_timeline(run_state, review_map),
             self._render_trace_summary(trace_spans),
             self._render_timing_summary(events),
+            self._render_scheduler_summary(scheduler_decisions),
             self._render_score_trend(reviews),
             self._render_agent_summary(run_state),
             self._render_resource_usage(run_state),
@@ -133,6 +135,24 @@ class RunDocGenerator:
             tool_turns = self._fmt_turn_series(event.data.get("trace_turn_tool_ms"))
             lines.append(
                 f"| {event.step_id or '-'} | {elapsed} | {first_event} | {first_token} | {llm_turns} | {tool_turns} |"
+            )
+        return "\n".join(lines)
+
+    def _render_scheduler_summary(self, decisions: list[SchedulerDecisionRecord]) -> str:
+        lines = [
+            "## 调度记录",
+            "",
+            "| Step | Role | Priority | Considered | Rejected | 原因 |",
+            "|------|------|----------|------------|----------|------|",
+        ]
+        if not decisions:
+            lines.append("| - | - | - | - | - | - |")
+            return "\n".join(lines)
+        for decision in decisions[-8:]:
+            rejected = ",".join(decision.rejected_targets) or "-"
+            lines.append(
+                f"| {decision.step_id} | {decision.selected_role} | {decision.selected_priority} | "
+                f"{decision.considered_count} | {rejected} | {decision.reason[:80]} |"
             )
         return "\n".join(lines)
 

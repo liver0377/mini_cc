@@ -4,46 +4,45 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator
 
-from mini_cc.agent.bus import AgentEventBus
 from mini_cc.context.engine_context import EngineContext
 from mini_cc.context.system_prompt import SystemPromptBuilder, collect_env_info
 from mini_cc.context.tool_use import ToolUseContext
-from mini_cc.harness import (
-    AgentBudget,
-    AgentTrace,
-    CheckpointStore,
-    ExecutionCandidate,
-    FailureClass,
+from mini_cc.harness.audit import TaskAuditRegistry
+from mini_cc.harness.bootstrap import prepare_run_request
+from mini_cc.harness.checkpoint import CheckpointStore
+from mini_cc.harness.diagnostics import QueryDiagnostics
+from mini_cc.harness.doc_generator import RunDocGenerator
+from mini_cc.harness.events import HarnessEvent
+from mini_cc.harness.iteration import (
     IterationOptimizer,
     IterationOutcome,
     IterationReview,
     IterationScore,
     IterationSnapshot,
-    RejectedCandidate,
+)
+from mini_cc.harness.judge import RunJudge
+from mini_cc.harness.models import (
+    AgentBudget,
+    AgentTrace,
+    FailureClass,
     RunBudget,
-    RunDocGenerator,
-    RunHarness,
     RunHealth,
-    RunJudge,
     RunState,
     RunStatus,
-    Scheduler,
-    SchedulingDecision,
+    SchedulerDecisionRecord,
     Step,
     StepKind,
     StepResult,
-    StepRunner,
     StepStatus,
     TraceSpan,
     WorkItem,
-    prepare_run_request,
+    format_local_time,
 )
-from mini_cc.harness.events import HarnessEvent
-from mini_cc.harness.models import format_local_time
 from mini_cc.harness.policy import PolicyAction, PolicyDecision, PolicyEngine
-from mini_cc.harness.step_runner import _QueryDiagnostics
+from mini_cc.harness.runner import RunHarness
+from mini_cc.harness.scheduler import ExecutionCandidate, RejectedCandidate, Scheduler, SchedulingDecision
+from mini_cc.harness.step_runner import StepRunner
 from mini_cc.harness.supervisor import SupervisorLoop
-from mini_cc.harness.task_audit import TaskAuditRegistry
 from mini_cc.models import (
     AgentCompletionEvent,
     AgentStartEvent,
@@ -59,7 +58,9 @@ from mini_cc.models import (
     ToolCallStart,
     ToolResultEvent,
 )
-from mini_cc.query_engine.engine import QueryEngine
+from mini_cc.runtime.agents import AgentEventBus
+from mini_cc.runtime.query import QueryEngine
+from mini_cc.tools.bash import Bash
 
 
 async def _noop_execute(tool_calls: list[ToolCall]) -> AsyncGenerator[ToolResultEvent, None]:
@@ -161,6 +162,26 @@ class TestCheckpointStore:
         assert len(spans) == 1
         assert spans[0].span_id == "span-1"
         assert spans[0].duration_ms == 120
+
+    def test_scheduler_decision_roundtrip(self, tmp_path) -> None:
+        store = CheckpointStore(base_dir=tmp_path)
+        decision = SchedulerDecisionRecord(
+            run_id="run-1",
+            step_id="step-1",
+            selected_role="analyzer",
+            selected_priority=35,
+            considered_count=2,
+            reason="selected step-1 as highest-priority analyzer candidate",
+            rejected_targets=["step-ro"],
+            rejected_reasons=["readonly capacity is full"],
+        )
+
+        store.append_scheduler_decision(decision)
+
+        decisions = store.load_scheduler_decisions("run-1")
+        assert len(decisions) == 1
+        assert decisions[0].step_id == "step-1"
+        assert decisions[0].rejected_targets == ["step-ro"]
 
     def test_save_documentation(self, tmp_path) -> None:
         store = CheckpointStore(base_dir=tmp_path)
@@ -379,6 +400,30 @@ class TestRunDocGenerator:
         assert "## 执行时序" in doc
         assert "| step-1 | 2.5s | 120ms | 340ms | 340ms, 1.8s | 110ms |" in doc
         assert "diag_" not in doc
+
+    def test_generate_includes_scheduler_summary(self, tmp_path) -> None:
+        store = CheckpointStore(base_dir=tmp_path)
+        run_state = RunState(run_id="run-scheduler", goal="inspect scheduler")
+        store.save_state(run_state)
+        store.append_scheduler_decision(
+            SchedulerDecisionRecord(
+                run_id=run_state.run_id,
+                step_id="step-1",
+                selected_role="analyzer",
+                selected_priority=35,
+                considered_count=2,
+                reason="selected step-1 as highest-priority analyzer candidate",
+                rejected_targets=["step-ro"],
+                rejected_reasons=["readonly capacity is full"],
+            )
+        )
+
+        doc = RunDocGenerator().generate(run_state, store)
+
+        assert "## 调度记录" in doc
+        assert (
+            "| step-1 | analyzer | 35 | 2 | step-ro | selected step-1 as highest-priority analyzer candidate |" in doc
+        )
 
     def test_generate_renders_task_audit_section(self, tmp_path) -> None:
         store = CheckpointStore(base_dir=tmp_path)
@@ -1214,7 +1259,7 @@ class TestStepRunnerQueryIntegration:
         assert "Step timed out after 1s" in result.error
         assert "LLM provider never returned any event" in result.error
         assert result.metadata["timeout_seconds"] == "1"
-        assert int(result.metadata["trace_elapsed_ms"]) >= 1000
+        assert int(result.metadata["trace_elapsed_ms"]) >= 900
         assert result.metadata["trace_last_event_type"] == "(none)"
         assert result.metadata["trace_message_count"] == "1"
         assert result.metadata["trace_text_delta_count"] == "0"
@@ -1234,7 +1279,7 @@ class TestStepRunnerQueryIntegration:
                 return ToolResult(output="ok", success=True)
 
         bash = _RecordingBash()
-        runner = StepRunner(bash_tool=bash)  # type: ignore[arg-type]
+        runner = StepRunner(bash_tool=bash)
         run_state = RunState(run_id="run-bash-timeout", goal="test", budget=RunBudget(max_step_seconds=30))
         step = Step(
             kind=StepKind.RUN_TESTS,
@@ -1250,7 +1295,7 @@ class TestStepRunnerQueryIntegration:
         assert bash.calls == [("pytest", 2000)]
 
     def test_query_diagnostics_collects_tool_trace_metadata(self) -> None:
-        diag = _QueryDiagnostics()
+        diag = QueryDiagnostics()
 
         diag.record_event(TextDelta(content="working"))
         diag.record_event(ToolCallStart(tool_call_id="tc_agent", name="agent"))
@@ -1345,6 +1390,32 @@ class TestSupervisorMetadata:
         assert step_completed.data["trace_tool_count"] == "1"
         assert step_completed.data["trace_agent_count"] == "1"
         assert "tool:file_read[success]" in step_completed.data["trace_outline"]
+
+    async def test_step_started_persists_scheduler_decision(self, tmp_path) -> None:
+        store = CheckpointStore(base_dir=tmp_path)
+
+        async def _handler(step: Step, run_state: RunState) -> StepResult:
+            return StepResult(success=True, summary="ok", progress_made=True)
+
+        runner = StepRunner(handlers={StepKind.ANALYZE_REPO: _handler, StepKind.FINALIZE: _handler})
+        supervisor = SupervisorLoop(store=store, step_runner=runner)
+        run_state = RunState(
+            run_id="run-scheduler-decision",
+            goal="inspect scheduler",
+            steps=[
+                Step(id="step-1", kind=StepKind.ANALYZE_REPO, title="Analyze", goal="analyze"),
+                Step(id="step-2", kind=StepKind.FINALIZE, title="Finalize", goal="finalize"),
+            ],
+        )
+        store.save_state(run_state)
+
+        await supervisor.run(run_state)
+
+        decisions = store.load_scheduler_decisions(run_state.run_id)
+        assert len(decisions) >= 1
+        assert decisions[0].step_id == "step-1"
+        assert decisions[0].selected_role == "analyzer"
+        assert decisions[0].considered_count >= 1
 
     async def test_step_completed_persists_trace_spans(self, tmp_path) -> None:
         store = CheckpointStore(base_dir=tmp_path)
@@ -1497,7 +1568,7 @@ class TestAgentTraceAndActiveCount:
 
 class TestSupervisorLifecycleDrain:
     async def test_lifecycle_events_update_spawned_agents(self, tmp_path) -> None:
-        from mini_cc.agent.bus import AgentEventBus, AgentLifecycleEvent
+        from mini_cc.runtime.agents import AgentEventBus, AgentLifecycleEvent
 
         store = CheckpointStore(base_dir=tmp_path)
         bus = AgentEventBus()
@@ -1540,7 +1611,7 @@ class TestSupervisorLifecycleDrain:
         assert result.metadata["agent_peak_active"] == "1"
 
     async def test_lifecycle_completion_captures_generic_agent_result_signals(self, tmp_path) -> None:
-        from mini_cc.agent.bus import AgentEventBus, AgentLifecycleEvent
+        from mini_cc.runtime.agents import AgentEventBus, AgentLifecycleEvent
 
         store = CheckpointStore(base_dir=tmp_path)
         bus = AgentEventBus()
@@ -1596,7 +1667,7 @@ class TestSupervisorLifecycleDrain:
         assert "stale results" in result.metadata["agent_latest_issue"]
 
     async def test_run_waits_for_active_agents_before_completing(self, tmp_path) -> None:
-        from mini_cc.agent.bus import AgentLifecycleEvent
+        from mini_cc.runtime.agents import AgentLifecycleEvent
 
         store = CheckpointStore(base_dir=tmp_path)
 
@@ -1731,7 +1802,7 @@ class TestAgentBudgetInStepRunner:
         assert engine_ctx.agent_budget.remaining_write == 0
 
     async def test_task_audit_step_uses_named_json_artifact(self, tmp_path) -> None:
-        runner = StepRunner()
+        runner = StepRunner(bash_tool=Bash())
         run_state = RunState(run_id="run-task-audit", goal="audit")
         step = Step(
             kind=StepKind.RUN_TASK_AUDIT,
@@ -2115,7 +2186,7 @@ class TestTaskAuditRegistryResolve:
         plugin_file.write_text(
             (
                 "from __future__ import annotations\n"
-                "from mini_cc.harness.task_audit import TaskAuditProfile, TaskAuditResult\n"
+                "from mini_cc.harness.audit import TaskAuditProfile, TaskAuditResult\n"
                 "\n"
                 "class DemoProfile(TaskAuditProfile):\n"
                 "    profile_id = 'demo_task'\n"

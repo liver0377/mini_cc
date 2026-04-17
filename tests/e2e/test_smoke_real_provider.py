@@ -9,10 +9,12 @@ import pytest
 from mini_cc.context.engine_context import EngineContext
 from mini_cc.context.system_prompt import SystemPromptBuilder, collect_env_info
 from mini_cc.context.tool_use import ToolUseContext
-from mini_cc.harness import CheckpointStore, RunBudget, RunHarness, RunStatus, Step, StepKind, StepStatus
+from mini_cc.harness.checkpoint import CheckpointStore
+from mini_cc.harness.models import RunBudget, RunStatus, Step, StepKind, StepStatus
+from mini_cc.harness.runner import RunHarness
 from mini_cc.models import ToolCall, ToolResultEvent
 from mini_cc.providers.openai import OpenAIProvider
-from mini_cc.query_engine.engine import QueryEngine
+from mini_cc.runtime.query import QueryEngine
 
 _REAL_PROVIDER_ENV = "MINI_CC_RUN_REAL_PROVIDER_SMOKE"
 _HAS_REAL_PROVIDER_CONFIG = bool(os.environ.get(_REAL_PROVIDER_ENV) == "1" and os.environ.get("OPENAI_API_KEY"))

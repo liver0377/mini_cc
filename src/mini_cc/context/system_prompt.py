@@ -4,10 +4,9 @@ import json
 import os
 import platform
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-
-from mini_cc.memory.store import load_memory_index
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 _STATIC_FILES = ("intro.md", "rules.md", "caution.md", "tool_guide.md")
@@ -203,9 +202,7 @@ def _render_run_context(runs_dir: Path, target_run_id: str, *, lessons_only: boo
         journal_path = run_dir / "journal.md"
         if journal_path.is_file():
             journal_lines = [
-                line.strip()
-                for line in journal_path.read_text(encoding="utf-8").splitlines()
-                if line.strip()
+                line.strip() for line in journal_path.read_text(encoding="utf-8").splitlines() if line.strip()
             ]
             if journal_lines:
                 lines.append("Journal tail:")
@@ -250,9 +247,7 @@ def _render_current_run_context(runs_dir: Path, target_run_id: str) -> str | Non
         journal_path = run_dir / "journal.md"
         if journal_path.is_file():
             journal_lines = [
-                line.strip()
-                for line in journal_path.read_text(encoding="utf-8").splitlines()
-                if line.strip()
+                line.strip() for line in journal_path.read_text(encoding="utf-8").splitlines() if line.strip()
             ]
             if journal_lines:
                 lines.append("Journal tail:")
@@ -332,10 +327,19 @@ def _read_str_list(data: ReviewDict, key: str) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
+MemoryLoader = Callable[[Path], str | None]
+
+
 class SystemPromptBuilder:
-    def __init__(self) -> None:
+    def __init__(self, memory_loader: MemoryLoader | None = None) -> None:
         self._static_parts: list[str] = _load_static_prompts()
         self._static_sub_parts: list[str] = _load_static_prompts(_SUB_STATIC_FILES)
+        self._memory_loader = memory_loader
+
+    def _maybe_load_memory(self, working_directory: str) -> str | None:
+        if self._memory_loader is None:
+            return None
+        return self._memory_loader(Path(working_directory))
 
     def build(
         self,
@@ -351,7 +355,7 @@ class SystemPromptBuilder:
         if agents_md:
             parts.append(agents_md)
 
-        memory_index = load_memory_index(Path(env.working_directory))
+        memory_index = self._maybe_load_memory(env.working_directory)
         if memory_index:
             parts.append(memory_index)
 
@@ -375,7 +379,7 @@ class SystemPromptBuilder:
         if agents_md:
             parts.append(agents_md)
 
-        memory_index = load_memory_index(Path(env.working_directory))
+        memory_index = self._maybe_load_memory(env.working_directory)
         if memory_index:
             parts.append(memory_index)
 

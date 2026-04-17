@@ -5,6 +5,10 @@ from dataclasses import dataclass
 from mini_cc.models.message import ToolCall
 
 
+class ContextLengthExceededError(Exception):
+    pass
+
+
 @dataclass
 class TextDelta:
     content: str

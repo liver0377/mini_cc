@@ -8,8 +8,6 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from mini_cc.agent.dispatcher import AgentDispatcher, AgentDispatchRequest
-from mini_cc.agent.manager import AgentManager
 from mini_cc.models import (
     AgentStartEvent,
     AgentToolCallEvent,
@@ -20,6 +18,7 @@ from mini_cc.models import (
     ToolCallStart,
     ToolResultEvent,
 )
+from mini_cc.runtime.agents import AgentDispatcher, AgentDispatchRequest, AgentManager
 from mini_cc.tools.base import BaseTool, ToolResult
 from mini_cc.tools.plan_agents import AgentDispatchPlan
 

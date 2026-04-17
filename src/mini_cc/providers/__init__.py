@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from mini_cc.providers.base import LLMProvider
 from mini_cc.providers.openai import OpenAIProvider
 

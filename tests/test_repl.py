@@ -15,7 +15,7 @@ from mini_cc.models import (
     ToolCallStart,
     ToolResultEvent,
 )
-from mini_cc.repl import REPLConfig, render_event
+from mini_cc.app.repl import REPLConfig, render_event
 
 
 class TestREPLConfig:

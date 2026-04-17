@@ -3,8 +3,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from mini_cc.harness.audit import TaskAuditProfile, TaskAuditRegistry
 from mini_cc.harness.models import Step, StepKind, WorkItem
-from mini_cc.harness.task_audit import TaskAuditProfile, TaskAuditRegistry
 
 BOOTSTRAP_FLOW_METADATA = "bootstrap_flow"
 BOOTSTRAP_STEP_BUDGET_SECONDS = 900

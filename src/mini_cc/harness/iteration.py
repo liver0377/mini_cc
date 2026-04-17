@@ -6,8 +6,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from mini_cc.harness.audit import TaskAuditRegistry
 from mini_cc.harness.models import RunState, Step, StepKind, StepResult, StepStatus
-from mini_cc.harness.task_audit import TaskAuditRegistry
 
 
 class IterationOutcome(StrEnum):
@@ -297,9 +297,11 @@ class IterationOptimizer:
         score: IterationScore,
     ) -> IterationOutcome:
         if self._string_metadata(current.metadata, "agent_latest_issue") and not current.progress_made:
-            if previous is not None and self._string_metadata(previous.metadata, "agent_latest_issue") == self._string_metadata(
-                current.metadata, "agent_latest_issue"
-            ):
+            previous_issue = None
+            if previous is not None:
+                previous_issue = self._string_metadata(previous.metadata, "agent_latest_issue")
+            current_issue = self._string_metadata(current.metadata, "agent_latest_issue")
+            if previous_issue == current_issue:
                 return IterationOutcome.BLOCKED
             return IterationOutcome.REGRESSED
         if not current.success and current.error and previous is not None and previous.error == current.error:

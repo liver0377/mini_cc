@@ -13,21 +13,19 @@ from typing import TYPE_CHECKING, cast
 
 from rich import print as rprint
 
-from mini_cc.agent.bus import AgentEventBus
-from mini_cc.agent.manager import AgentManager
 from mini_cc.context.system_prompt import EnvInfo, SystemPromptBuilder, collect_env_info
 from mini_cc.context.tool_use import ToolUseContext
-from mini_cc.memory.extractor import MemoryExtractor
 from mini_cc.models import AgentCompletionEvent, AgentStatus, Event, QueryState
-from mini_cc.query_engine.engine import QueryEngine
+from mini_cc.runtime.agents import AgentEventBus, AgentManager
+from mini_cc.runtime.execution import StreamingToolExecutor
+from mini_cc.runtime.query import QueryEngine
 from mini_cc.task.service import TaskService
-from mini_cc.tool_executor.executor import StreamingToolExecutor
 from mini_cc.tools import create_default_registry
 from mini_cc.tools.agent_tool import AgentTool
 
 if TYPE_CHECKING:
-    from mini_cc.agent.dispatcher import AgentDispatcher
     from mini_cc.harness.models import AgentBudget
+    from mini_cc.runtime.agents import AgentDispatcher
 
 
 class EngineContext:
@@ -169,8 +167,8 @@ def create_engine(
         rprint("[dim]请在 .env 文件或环境变量中设置 OPENAI_API_KEY[/]")
         sys.exit(1)
 
-    from mini_cc.agent.dispatcher import AgentDispatcher
     from mini_cc.providers.openai import OpenAIProvider
+    from mini_cc.runtime import AgentDispatcher
 
     provider = OpenAIProvider(
         model=config.model,
@@ -193,6 +191,10 @@ def create_engine(
         is_interrupted=lambda: interrupt_flag.is_set() or (ctx_ref[0].is_interrupted if ctx_ref else False),
     )
 
+    from mini_cc.features.compression.compressor import compress_messages, replace_with_summary, should_auto_compact
+    from mini_cc.features.memory.extractor import MemoryExtractor
+    from mini_cc.features.memory.store import load_memory_index
+
     memory_extractor = MemoryExtractor(stream_fn=provider.stream, cwd=str(Path.cwd()))
 
     async def _post_turn_hook(state: QueryState) -> None:
@@ -206,12 +208,15 @@ def create_engine(
         agent_event_queue=agent_event_queue,
         post_turn_hook=_post_turn_hook,
         model=config.model,
+        compact_fn=lambda msgs: compress_messages(msgs, provider.stream, config.model),
+        should_compact_fn=lambda msgs: should_auto_compact(msgs, config.model),
+        replace_summary_fn=replace_with_summary,
     )
 
     session_id = secrets.token_hex(4)
     task_service = TaskService(task_list_id=session_id)
     env_info = collect_env_info(config.model)
-    prompt_builder = SystemPromptBuilder()
+    prompt_builder = SystemPromptBuilder(memory_loader=load_memory_index)
 
     ctx_ref: list[EngineContext] = []
 

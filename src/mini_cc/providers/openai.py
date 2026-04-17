@@ -5,8 +5,8 @@ from typing import Any
 
 import openai
 
-from mini_cc.compression.compressor import ContextLengthExceededError
 from mini_cc.models import (
+    ContextLengthExceededError,
     Event,
     Message,
     Role,

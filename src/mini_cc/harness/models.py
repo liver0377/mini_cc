@@ -108,6 +108,19 @@ class TraceSpan(BaseModel):
     metadata: dict[str, str] = Field(default_factory=dict)
 
 
+class SchedulerDecisionRecord(BaseModel):
+    run_id: str
+    step_id: str
+    work_item_id: str | None = None
+    selected_role: str
+    selected_priority: int
+    considered_count: int
+    reason: str
+    rejected_targets: list[str] = Field(default_factory=list)
+    rejected_reasons: list[str] = Field(default_factory=list)
+    created_at: str = Field(default_factory=utc_now_iso)
+
+
 class AgentTrace(BaseModel):
     agent_id: str
     source_step_id: str | None = None

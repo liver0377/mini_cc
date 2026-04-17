@@ -5,7 +5,7 @@ import json
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
-from mini_cc.harness import AgentBudget
+from mini_cc.harness.models import AgentBudget
 from mini_cc.models import (
     AgentConfig,
     AgentStartEvent,

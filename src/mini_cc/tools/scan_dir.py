@@ -69,10 +69,7 @@ class ScanDirTool(BaseTool):
             files = [entry for entry in visible if entry.is_file()]
 
             if depth > 0:
-                lines.append(
-                    f"{'  ' * (depth - 1)}- {directory.name}/"
-                    f" [dirs={len(dirs)}, files={len(files)}]"
-                )
+                lines.append(f"{'  ' * (depth - 1)}- {directory.name}/ [dirs={len(dirs)}, files={len(files)}]")
                 emitted += 1
                 if emitted >= max_entries:
                     return

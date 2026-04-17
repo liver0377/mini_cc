@@ -3,7 +3,6 @@ from __future__ import annotations
 import secrets
 import threading
 
-from mini_cc.agent.bus import AgentEventBus
 from mini_cc.context.engine_context import EngineContext
 from mini_cc.harness.checkpoint import CheckpointStore
 from mini_cc.harness.events import HarnessEvent
@@ -22,6 +21,8 @@ from mini_cc.harness.models import (
 from mini_cc.harness.policy import PolicyEngine
 from mini_cc.harness.step_runner import QueryEventSink, StepRunner
 from mini_cc.harness.supervisor import HarnessEventSink, SupervisorLoop
+from mini_cc.runtime.agents import AgentEventBus
+from mini_cc.tools.bash import Bash
 
 
 class RunHarness:
@@ -59,7 +60,11 @@ class RunHarness:
     ) -> RunHarness:
         return cls(
             store=store,
-            step_runner=StepRunner(engine_ctx=engine_ctx, query_event_sink=query_event_sink),
+            step_runner=StepRunner(
+                engine_ctx=engine_ctx,
+                bash_tool=Bash(),
+                query_event_sink=query_event_sink,
+            ),
             event_sink=event_sink,
             lifecycle_bus=engine_ctx.lifecycle_bus if engine_ctx is not None else None,
         )

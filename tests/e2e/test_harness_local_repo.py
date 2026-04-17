@@ -5,26 +5,17 @@ import json
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 
-from mini_cc.agent.bus import AgentEventBus, AgentLifecycleEvent
 from mini_cc.context.engine_context import EngineContext
 from mini_cc.context.system_prompt import SystemPromptBuilder, collect_env_info
 from mini_cc.context.tool_use import ToolUseContext
-from mini_cc.harness import (
-    BOOTSTRAP_FLOW_METADATA,
-    CheckpointStore,
-    RetryPolicy,
-    RunBudget,
-    RunHarness,
-    RunState,
-    RunStatus,
-    Step,
-    StepKind,
-    StepStatus,
-    prepare_run_request,
-)
+from mini_cc.harness.bootstrap import BOOTSTRAP_FLOW_METADATA, prepare_run_request
+from mini_cc.harness.checkpoint import CheckpointStore
+from mini_cc.harness.models import RetryPolicy, RunBudget, RunStatus, Step, StepKind, StepStatus
+from mini_cc.harness.runner import RunHarness
 from mini_cc.models import Event, Message, Role, TextDelta, ToolCallDelta, ToolCallEnd, ToolCallStart
-from mini_cc.query_engine.engine import QueryEngine
-from mini_cc.tool_executor.executor import StreamingToolExecutor
+from mini_cc.runtime.agents import AgentEventBus, AgentLifecycleEvent
+from mini_cc.runtime.execution import StreamingToolExecutor
+from mini_cc.runtime.query import QueryEngine
 from mini_cc.tools import create_default_registry
 
 
@@ -55,7 +46,10 @@ def _make_stream(repo_path: Path) -> Callable[[list[Message], list[dict[str, obj
             if tool_count == 0:
                 yield TextDelta(content="Inspecting calc.py")
                 yield ToolCallStart(tool_call_id="tc_read", name="file_read")
-                yield ToolCallDelta(tool_call_id="tc_read", arguments_json_delta=json.dumps({"file_path": str(calc_path)}))
+                yield ToolCallDelta(
+                    tool_call_id="tc_read",
+                    arguments_json_delta=json.dumps({"file_path": str(calc_path)}),
+                )
                 yield ToolCallEnd(tool_call_id="tc_read")
                 return
             if tool_count == 1:
@@ -89,7 +83,9 @@ def _make_stream(repo_path: Path) -> Callable[[list[Message], list[dict[str, obj
     return _stream
 
 
-def _make_bootstrap_stream(repo_path: Path) -> Callable[[list[Message], list[dict[str, object]]], AsyncGenerator[Event, None]]:
+def _make_bootstrap_stream(
+    repo_path: Path,
+) -> Callable[[list[Message], list[dict[str, object]]], AsyncGenerator[Event, None]]:
     pyproject_path = repo_path / "pyproject.toml"
     calc_path = repo_path / "calc.py"
     tests_path = repo_path / "tests" / "test_calc.py"
@@ -113,10 +109,7 @@ def _make_bootstrap_stream(repo_path: Path) -> Callable[[list[Message], list[dic
                         {
                             "file_path": str(pyproject_path),
                             "content": (
-                                "[project]\n"
-                                "name = \"bootstrap-demo\"\n"
-                                "version = \"0.1.0\"\n"
-                                "requires-python = \">=3.11\"\n"
+                                '[project]\nname = "bootstrap-demo"\nversion = "0.1.0"\nrequires-python = ">=3.11"\n'
                             ),
                         }
                     ),
@@ -172,7 +165,9 @@ def _make_bootstrap_stream(repo_path: Path) -> Callable[[list[Message], list[dic
             return
 
         if "总结已完成工作" in prompt:
-            yield TextDelta(content="The empty repository was bootstrapped into a runnable Python project and tests pass.")
+            yield TextDelta(
+                content="The empty repository was bootstrapped into a runnable Python project and tests pass."
+            )
             return
 
         yield TextDelta(content=f"Unhandled prompt: {prompt}")
@@ -248,7 +243,10 @@ class TestHarnessLocalRepoE2E:
         repo_path = tmp_path / "repo"
         repo_path.mkdir(parents=True, exist_ok=True)
         store = CheckpointStore(base_dir=tmp_path / "runs")
-        harness = RunHarness.create_default(engine_ctx=_make_engine_ctx(repo_path, stream_fn=_make_bootstrap_stream(repo_path)), store=store)
+        harness = RunHarness.create_default(
+            engine_ctx=_make_engine_ctx(repo_path, stream_fn=_make_bootstrap_stream(repo_path)),
+            store=store,
+        )
         steps, metadata = prepare_run_request("从空仓库实现一个可测试的小项目", "build", repo_path)
         metadata["test_command"] = f"cd {repo_path} && python -m pytest -q"
 
@@ -329,7 +327,7 @@ class TestHarnessLocalRepoE2E:
                 "from __future__ import annotations\n"
                 "import json\n"
                 "from pathlib import Path\n"
-                "from mini_cc.harness.task_audit import TaskAuditProfile, TaskAuditResult\n\n"
+                "from mini_cc.harness.audit import TaskAuditProfile, TaskAuditResult\n\n"
                 "class DemoTaskProfile(TaskAuditProfile):\n"
                 "    profile_id = 'demo_task'\n"
                 "    display_name = 'Demo Task'\n"
@@ -344,7 +342,12 @@ class TestHarnessLocalRepoE2E:
                 "            return None\n"
                 "        summary = loaded.get('summary', 'demo audit complete')\n"
                 "        blockers = [str(item) for item in loaded.get('blockers', [])]\n"
-                "        return TaskAuditResult(profile_id=self.profile_id, summary=str(summary), blockers=blockers, raw_artifact_path=str(path))\n\n"
+                "        return TaskAuditResult(\n"
+                "            profile_id=self.profile_id,\n"
+                "            summary=str(summary),\n"
+                "            blockers=blockers,\n"
+                "            raw_artifact_path=str(path),\n"
+                "        )\n\n"
                 "def register() -> TaskAuditProfile:\n"
                 "    return DemoTaskProfile()\n"
             ),
@@ -502,7 +505,7 @@ class TestHarnessLocalRepoE2E:
             budget=RunBudget(max_step_seconds=1),
             retry_policy=RetryPolicy(max_step_retries=0),
             metadata={
-                "test_command": f"cd {repo_path} && python -c \"import time; time.sleep(2)\"",
+                "test_command": f'cd {repo_path} && python -c "import time; time.sleep(2)"',
             },
         )
 

@@ -7,16 +7,16 @@ import threading
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
-from mini_cc.agent.bus import AgentEventBus, AgentLifecycleEvent
 from mini_cc.harness.checkpoint import CheckpointStore
 from mini_cc.harness.doc_generator import RunDocGenerator
 from mini_cc.harness.events import HarnessEvent
-from mini_cc.harness.iteration import IterationOptimizer
+from mini_cc.harness.iteration import IterationOptimizer, IterationSnapshot
 from mini_cc.harness.judge import RunJudge
 from mini_cc.harness.models import (
     AgentTrace,
     RunState,
     RunStatus,
+    SchedulerDecisionRecord,
     Step,
     StepKind,
     StepResult,
@@ -30,6 +30,7 @@ from mini_cc.harness.models import (
 from mini_cc.harness.policy import PolicyAction, PolicyDecision, PolicyEngine
 from mini_cc.harness.scheduler import Scheduler
 from mini_cc.harness.step_runner import StepRunner
+from mini_cc.runtime.agents import AgentEventBus, AgentLifecycleEvent
 
 HarnessEventSink = Callable[[HarnessEvent, RunState], Awaitable[None] | None]
 
@@ -142,6 +143,22 @@ class SupervisorLoop:
                 run_state.phase = step.kind.value
             run_state.sync_step(step)
             run_state.touch()
+            self._store.append_scheduler_decision(
+                SchedulerDecisionRecord(
+                    run_id=run_state.run_id,
+                    step_id=step.id,
+                    work_item_id=work_item.id if work_item is not None else None,
+                    selected_role=scheduling_decision.selected.role,
+                    selected_priority=scheduling_decision.selected.priority,
+                    considered_count=scheduling_decision.considered_count,
+                    reason=scheduling_decision.reason,
+                    rejected_targets=[
+                        rejected.work_item.id if rejected.work_item is not None else rejected.step.id
+                        for rejected in scheduling_decision.rejected
+                    ],
+                    rejected_reasons=[rejected.reason for rejected in scheduling_decision.rejected],
+                )
+            )
             await self._emit_event(
                 HarnessEvent(
                     event_type="step_started",
@@ -159,11 +176,7 @@ class SupervisorLoop:
                         "scheduler_reason": scheduling_decision.reason,
                         "scheduler_considered": str(scheduling_decision.considered_count),
                         "scheduler_rejected": ",".join(
-                            (
-                                rejected.work_item.id
-                                if rejected.work_item is not None
-                                else rejected.step.id
-                            )
+                            (rejected.work_item.id if rejected.work_item is not None else rejected.step.id)
                             for rejected in scheduling_decision.rejected[:3]
                         ),
                     },
@@ -193,198 +206,243 @@ class SupervisorLoop:
                 self._step_runner.set_interrupt_event(None)
                 self._clear_step_context()
             if interrupt_event is not None and interrupt_event.is_set():
-                step.error = result.error or "run cancelled during step execution"
-                step.status = StepStatus.FAILED_TERMINAL
-                if work_item is not None:
-                    work_item.error = step.error
-                    work_item.status = WorkItemStatus.FAILED_TERMINAL
-                    step.sync_work_item(work_item)
-                run_state.sync_step(step)
-                run_state.status = RunStatus.CANCELLED
-                run_state.phase = "cancelled"
-                run_state.current_step_id = None
-                run_state.current_work_item_id = None
-                run_state.touch()
-                self._store.save_state(run_state)
+                self._cancel_step(run_state, step, work_item, result)
                 break
             self._drain_and_update_agents(run_state)
 
-            artifact_owner = work_item.id if work_item is not None else step.id
-            artifact_paths = self._save_artifacts(run_state, step, result.artifacts, artifact_owner=artifact_owner)
-            previous_snapshot = self._store.latest_iteration_snapshot(run_state.run_id)
-            if work_item is not None:
-                work_item.summary = result.summary
-                work_item.error = result.error
-                work_item.artifacts.update(artifact_paths)
-                work_item.metadata.update(result.metadata)
-                step.sync_work_item(work_item)
-                step.summary = self._summarize_step_work_items(step)
-                step.error = result.error
-                step.artifacts.update(artifact_paths)
-            else:
-                step.summary = result.summary
-                step.evaluation = result.summary
-                step.error = result.error
-                step.artifacts.update(artifact_paths)
-            run_state.artifacts.update(artifact_paths)
-            run_state.latest_summary = result.summary
-            if result.query_state is not None:
-                run_state.latest_query_state = result.query_state
+            await self._apply_step_result(run_state, step, work_item, result, execution_started_at)
 
-            if step.kind == StepKind.RUN_TESTS:
-                run_state.test_run_count += 1
-                run_state.bash_command_count += 1
-                run_state.status = RunStatus.VERIFYING
-            elif step.kind == StepKind.INSPECT_FAILURES:
-                run_state.bash_command_count += 1
-                run_state.status = RunStatus.RUNNING
-            elif step.kind == StepKind.RUN_TASK_AUDIT:
-                run_state.bash_command_count += 1
-            elif step.kind == StepKind.EDIT_CODE:
-                run_state.status = RunStatus.RUNNING
+            if run_state.is_terminal:
+                break
 
-            if work_item is not None and result.success:
-                work_item.status = WorkItemStatus.SUCCEEDED
-                step.sync_work_item(work_item)
-            elif (
-                work_item is not None
-                and result.retryable
-                and work_item.retry_count < run_state.retry_policy.max_step_retries
-            ):
-                work_item.status = WorkItemStatus.PENDING
-                work_item.retry_count += 1
-                step.sync_work_item(work_item)
-            elif work_item is not None and not result.success:
-                work_item.status = WorkItemStatus.FAILED_TERMINAL
-                step.sync_work_item(work_item)
+        self._finalize_terminal_run(run_state)
+        return run_state
 
-            if result.success:
-                run_state.failure_count = 0
-                run_state.provider_cooldown_count = 0
-                run_state.consecutive_no_progress_count = (
-                    0 if result.progress_made else (run_state.consecutive_no_progress_count + 1)
-                )
-            elif result.failure_class is not None and result.failure_class.value == "transient_provider":
-                run_state.provider_cooldown_count += 1
-            else:
-                run_state.failure_count += 1
-                run_state.consecutive_no_progress_count += 0 if result.progress_made else 1
+    def _cancel_step(
+        self,
+        run_state: RunState,
+        step: Step,
+        work_item: WorkItem | None,
+        result: StepResult,
+    ) -> None:
+        step.error = result.error or "run cancelled during step execution"
+        step.status = StepStatus.FAILED_TERMINAL
+        if work_item is not None:
+            work_item.error = step.error
+            work_item.status = WorkItemStatus.FAILED_TERMINAL
+            step.sync_work_item(work_item)
+        run_state.sync_step(step)
+        run_state.status = RunStatus.CANCELLED
+        run_state.phase = "cancelled"
+        run_state.current_step_id = None
+        run_state.current_work_item_id = None
+        run_state.touch()
+        self._store.save_state(run_state)
 
-            if work_item is not None and result.success and step.pending_work_items():
-                self._append_trace_spans(
-                    run_state,
-                    result.trace_spans,
-                    self._execution_span(
-                        run_state=run_state,
-                        step=step,
-                        work_item=work_item,
-                        started_at=execution_started_at,
-                        status="success",
-                        summary=result.summary,
-                    ),
-                )
-                run_state.sync_step(step)
-                run_state.current_step_id = None
-                run_state.current_work_item_id = None
-                run_state.status = RunStatus.RUNNING
-                run_state.touch()
-                await self._emit_event(
-                    HarnessEvent(
-                        event_type="step_completed",
-                        run_id=run_state.run_id,
-                        step_id=step.id,
-                        message=result.summary[:200],
-                        data={
-                            "success": "true",
-                            "health": "",
-                            "decision": "continue_work_item",
-                            "decision_reason": "work item succeeded; continue remaining work items",
-                            "work_item_id": work_item.id,
-                            "work_item_kind": work_item.kind,
-                            "active_agents": str(run_state.active_agent_count),
-                            "failure_count": str(run_state.failure_count),
-                            "no_progress_count": str(run_state.consecutive_no_progress_count),
-                            "replan_count": str(run_state.replan_count),
-                            "failure_class": "",
-                            "inserted_steps": "",
-                            **self._result_metadata(result),
-                        },
-                    ),
-                    run_state,
-                )
-                self._store.save_state(run_state)
-                self._store.save_checkpoint(run_state, f"step-{step.id}")
-                continue
+    async def _apply_step_result(
+        self,
+        run_state: RunState,
+        step: Step,
+        work_item: WorkItem | None,
+        result: StepResult,
+        execution_started_at: str,
+    ) -> None:
+        artifact_owner = work_item.id if work_item is not None else step.id
+        artifact_paths = self._save_artifacts(run_state, step, result.artifacts, artifact_owner=artifact_owner)
+        previous_snapshot = self._store.latest_iteration_snapshot(run_state.run_id)
+        if work_item is not None:
+            work_item.summary = result.summary
+            work_item.error = result.error
+            work_item.artifacts.update(artifact_paths)
+            work_item.metadata.update(result.metadata)
+            step.sync_work_item(work_item)
+            step.summary = self._summarize_step_work_items(step)
+            step.error = result.error
+            step.artifacts.update(artifact_paths)
+        else:
+            step.summary = result.summary
+            step.evaluation = result.summary
+            step.error = result.error
+            step.artifacts.update(artifact_paths)
+        run_state.artifacts.update(artifact_paths)
+        run_state.latest_summary = result.summary
+        if result.query_state is not None:
+            run_state.latest_query_state = result.query_state
 
-            final_result = result if work_item is None else self._finalize_step_result(step, result)
+        self._update_step_counters(run_state, step)
+        self._update_work_item_status(run_state, step, work_item, result)
+        self._update_failure_tracking(run_state, result)
+
+        if work_item is not None and result.success and step.pending_work_items():
             self._append_trace_spans(
                 run_state,
-                final_result.trace_spans,
+                result.trace_spans,
                 self._execution_span(
                     run_state=run_state,
                     step=step,
                     work_item=work_item,
                     started_at=execution_started_at,
-                    status="success" if final_result.success else "failed",
-                    summary=final_result.summary or (final_result.error or ""),
+                    status="success",
+                    summary=result.summary,
                 ),
             )
-            snapshot = self._iteration.capture(run_state, step, final_result, artifact_paths)
-            review = self._iteration.review(snapshot, previous_snapshot)
-            health = self._judge.assess(run_state, step, final_result)
-            decision = self._policy.evaluate_step(run_state, step, final_result, health)
-            generated_steps = self._iteration.apply_review(run_state, step, final_result, review)
-            self._store.append_iteration_snapshot(snapshot)
-            self._store.append_iteration_review(review)
-            self._store.append_journal_entry(
-                run_state.run_id,
-                self._iteration.format_journal_entry(snapshot, review, generated_steps + decision.insert_steps),
-            )
-            self._apply_step_decision(run_state, step, final_result, decision)
-
-            next_steps = list(final_result.next_steps)
-            next_steps.extend(generated_steps)
-            next_steps.extend(decision.insert_steps)
-            if next_steps:
-                next_steps = self._iteration.apply_constraints_to_steps(next_steps, review)
-                self._append_generated_steps(run_state, next_steps)
-
+            run_state.sync_step(step)
             run_state.current_step_id = None
             run_state.current_work_item_id = None
-            if run_state.status not in {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.BLOCKED, RunStatus.TIMED_OUT}:
-                run_state.status = RunStatus.RUNNING
+            run_state.status = RunStatus.RUNNING
             run_state.touch()
             await self._emit_event(
                 HarnessEvent(
                     event_type="step_completed",
                     run_id=run_state.run_id,
                     step_id=step.id,
-                    message=final_result.summary[:200],
+                    message=result.summary[:200],
                     data={
-                        "success": str(final_result.success).lower(),
-                        "health": health.value,
-                        "decision": decision.action.value,
-                        "decision_reason": decision.reason,
-                        "work_item_id": work_item.id if work_item is not None else "",
-                        "work_item_kind": work_item.kind if work_item is not None else "",
+                        "success": "true",
+                        "health": "",
+                        "decision": "continue_work_item",
+                        "decision_reason": "work item succeeded; continue remaining work items",
+                        "work_item_id": work_item.id,
+                        "work_item_kind": work_item.kind,
                         "active_agents": str(run_state.active_agent_count),
                         "failure_count": str(run_state.failure_count),
                         "no_progress_count": str(run_state.consecutive_no_progress_count),
                         "replan_count": str(run_state.replan_count),
-                        "failure_class": (
-                            final_result.failure_class.value if final_result.failure_class is not None else ""
-                        ),
-                        "inserted_steps": ",".join(next_step.kind.value for next_step in next_steps),
-                        **self._result_metadata(final_result),
+                        "failure_class": "",
+                        "inserted_steps": "",
+                        **self._result_metadata(result),
                     },
                 ),
                 run_state,
             )
             self._store.save_state(run_state)
             self._store.save_checkpoint(run_state, f"step-{step.id}")
+            return
 
-        self._finalize_terminal_run(run_state)
-        return run_state
+        await self._finalize_step_with_review(
+            run_state, step, work_item, result, execution_started_at, artifact_paths, previous_snapshot
+        )
+
+    async def _finalize_step_with_review(
+        self,
+        run_state: RunState,
+        step: Step,
+        work_item: WorkItem | None,
+        result: StepResult,
+        execution_started_at: str,
+        artifact_paths: dict[str, str],
+        previous_snapshot: IterationSnapshot | None,
+    ) -> None:
+        final_result = result if work_item is None else self._finalize_step_result(step, result)
+        self._append_trace_spans(
+            run_state,
+            final_result.trace_spans,
+            self._execution_span(
+                run_state=run_state,
+                step=step,
+                work_item=work_item,
+                started_at=execution_started_at,
+                status="success" if final_result.success else "failed",
+                summary=final_result.summary or (final_result.error or ""),
+            ),
+        )
+        snapshot = self._iteration.capture(run_state, step, final_result, artifact_paths)
+        review = self._iteration.review(snapshot, previous_snapshot)
+        health = self._judge.assess(run_state, step, final_result)
+        decision = self._policy.evaluate_step(run_state, step, final_result, health)
+        generated_steps = self._iteration.apply_review(run_state, step, final_result, review)
+        self._store.append_iteration_snapshot(snapshot)
+        self._store.append_iteration_review(review)
+        self._store.append_journal_entry(
+            run_state.run_id,
+            self._iteration.format_journal_entry(snapshot, review, generated_steps + decision.insert_steps),
+        )
+        self._apply_step_decision(run_state, step, final_result, decision)
+
+        next_steps = list(final_result.next_steps)
+        next_steps.extend(generated_steps)
+        next_steps.extend(decision.insert_steps)
+        if next_steps:
+            next_steps = self._iteration.apply_constraints_to_steps(next_steps, review)
+            self._append_generated_steps(run_state, next_steps)
+
+        run_state.current_step_id = None
+        run_state.current_work_item_id = None
+        if run_state.status not in {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.BLOCKED, RunStatus.TIMED_OUT}:
+            run_state.status = RunStatus.RUNNING
+        run_state.touch()
+        await self._emit_event(
+            HarnessEvent(
+                event_type="step_completed",
+                run_id=run_state.run_id,
+                step_id=step.id,
+                message=final_result.summary[:200],
+                data={
+                    "success": str(final_result.success).lower(),
+                    "health": health.value,
+                    "decision": decision.action.value,
+                    "decision_reason": decision.reason,
+                    "work_item_id": work_item.id if work_item is not None else "",
+                    "work_item_kind": work_item.kind if work_item is not None else "",
+                    "active_agents": str(run_state.active_agent_count),
+                    "failure_count": str(run_state.failure_count),
+                    "no_progress_count": str(run_state.consecutive_no_progress_count),
+                    "replan_count": str(run_state.replan_count),
+                    "failure_class": (
+                        final_result.failure_class.value if final_result.failure_class is not None else ""
+                    ),
+                    "inserted_steps": ",".join(next_step.kind.value for next_step in next_steps),
+                    **self._result_metadata(final_result),
+                },
+            ),
+            run_state,
+        )
+        self._store.save_state(run_state)
+        self._store.save_checkpoint(run_state, f"step-{step.id}")
+
+    def _update_step_counters(self, run_state: RunState, step: Step) -> None:
+        if step.kind == StepKind.RUN_TESTS:
+            run_state.test_run_count += 1
+            run_state.bash_command_count += 1
+            run_state.status = RunStatus.VERIFYING
+        elif step.kind == StepKind.INSPECT_FAILURES:
+            run_state.bash_command_count += 1
+            run_state.status = RunStatus.RUNNING
+        elif step.kind == StepKind.RUN_TASK_AUDIT:
+            run_state.bash_command_count += 1
+        elif step.kind == StepKind.EDIT_CODE:
+            run_state.status = RunStatus.RUNNING
+
+    def _update_work_item_status(
+        self,
+        run_state: RunState,
+        step: Step,
+        work_item: WorkItem | None,
+        result: StepResult,
+    ) -> None:
+        if work_item is None:
+            return
+        if result.success:
+            work_item.status = WorkItemStatus.SUCCEEDED
+        elif result.retryable and work_item.retry_count < run_state.retry_policy.max_step_retries:
+            work_item.status = WorkItemStatus.PENDING
+            work_item.retry_count += 1
+        elif not result.success:
+            work_item.status = WorkItemStatus.FAILED_TERMINAL
+        step.sync_work_item(work_item)
+
+    def _update_failure_tracking(self, run_state: RunState, result: StepResult) -> None:
+        if result.success:
+            run_state.failure_count = 0
+            run_state.provider_cooldown_count = 0
+            run_state.consecutive_no_progress_count = (
+                0 if result.progress_made else (run_state.consecutive_no_progress_count + 1)
+            )
+        elif result.failure_class is not None and result.failure_class.value == "transient_provider":
+            run_state.provider_cooldown_count += 1
+        else:
+            run_state.failure_count += 1
+            run_state.consecutive_no_progress_count += 0 if result.progress_made else 1
 
     def _save_artifacts(
         self, run_state: RunState, step: Step, artifacts: dict[str, str], *, artifact_owner: str | None = None

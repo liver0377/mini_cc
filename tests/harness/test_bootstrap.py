@@ -10,7 +10,7 @@ from mini_cc.harness.bootstrap import (
     prepare_run_request,
 )
 from mini_cc.harness.models import StepKind
-from mini_cc.harness.task_audit import TaskAuditProfile, TaskAuditRegistry
+from mini_cc.harness.audit import TaskAuditProfile, TaskAuditRegistry
 
 
 class TestBootstrapDetection:

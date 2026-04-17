@@ -6,10 +6,17 @@ from typing import TypeVar
 
 from mini_cc.harness.events import HarnessEvent
 from mini_cc.harness.iteration import IterationReview, IterationSnapshot
-from mini_cc.harness.models import RunState, TraceSpan
+from mini_cc.harness.models import RunState, SchedulerDecisionRecord, TraceSpan
 
 _RUNS_DIR = Path.cwd() / ".mini_cc" / "runs"
-JsonLineModel = TypeVar("JsonLineModel", HarnessEvent, IterationSnapshot, IterationReview, TraceSpan)
+JsonLineModel = TypeVar(
+    "JsonLineModel",
+    HarnessEvent,
+    IterationSnapshot,
+    IterationReview,
+    SchedulerDecisionRecord,
+    TraceSpan,
+)
 
 
 def _sanitize_filename(name: str) -> str:
@@ -55,6 +62,9 @@ class CheckpointStore:
     def trace_spans_path(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "trace_spans.jsonl"
 
+    def scheduler_decisions_path(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "scheduler_decisions.jsonl"
+
     def save_state(self, state: RunState) -> Path:
         run_dir = self.run_dir(state.run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -77,6 +87,9 @@ class CheckpointStore:
 
     def append_trace_span(self, span: TraceSpan) -> Path:
         return self._append_jsonl(self.trace_spans_path(span.run_id), span.model_dump_json())
+
+    def append_scheduler_decision(self, decision: SchedulerDecisionRecord) -> Path:
+        return self._append_jsonl(self.scheduler_decisions_path(decision.run_id), decision.model_dump_json())
 
     def append_journal_entry(self, run_id: str, content: str) -> Path:
         path = self.journal_path(run_id)
@@ -102,6 +115,9 @@ class CheckpointStore:
 
     def load_trace_spans(self, run_id: str) -> list[TraceSpan]:
         return self._load_jsonl(self.trace_spans_path(run_id), TraceSpan)
+
+    def load_scheduler_decisions(self, run_id: str) -> list[SchedulerDecisionRecord]:
+        return self._load_jsonl(self.scheduler_decisions_path(run_id), SchedulerDecisionRecord)
 
     def latest_iteration_snapshot(self, run_id: str) -> IterationSnapshot | None:
         snapshots = self.load_iteration_snapshots(run_id)

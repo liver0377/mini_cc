@@ -20,6 +20,7 @@
 | **Harness** | [harness/design.md](./harness/design.md) | 长时运行 Harness（Run 生命周期、Supervisor、Step、Checkpoint、Policy） |
 | | [harness/orchestrator-refactor.md](./harness/orchestrator-refactor.md) | Harness 多 Agent 编排重构方案（Orchestrator / Dispatcher / WorkItem / 失败分型 / 落地清单） |
 | | [harness/task-specific-audit.md](./harness/task-specific-audit.md) | 任务专项审计（profile、专项 artifact、专项 judge、任务完成度文档化） |
+| **Architecture** | [architecture/final-layout.md](./architecture/final-layout.md) | 最终目录架构与无兼容层重构方案（目标分层、删除清单、迁移顺序、完成判定） |
 | **Iteration** | [iteration/design.md](./iteration/design.md) | 迭代优化系统（每轮复盘、评分、约束注入、下一轮改进） |
 | | [iteration/runtime.md](./iteration/runtime.md) | 运行期迭代记录（journal、snapshot、review 持久化格式与自动调试行为） |
 | **Security** | [security/README.md](./security/README.md) | 安全设计（Sandbox 限制、Plan/Build 模式） |

@@ -12,8 +12,9 @@ from mini_cc.context.system_prompt import (
     _read_agents_md,
     collect_env_info,
 )
-from mini_cc.harness import CheckpointStore, RunState, RunStatus
+from mini_cc.harness.checkpoint import CheckpointStore
 from mini_cc.harness.iteration import IterationOutcome, IterationReview, IterationScore
+from mini_cc.harness.models import RunState, RunStatus
 
 
 class TestDisplayModelName:
