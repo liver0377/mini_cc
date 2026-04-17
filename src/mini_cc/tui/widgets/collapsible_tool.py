@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from rich.markup import escape
 from textual.widget import Widget
 from textual.widgets import Collapsible, Markdown, Static
 
@@ -31,7 +32,7 @@ class CollapsibleTool(Collapsible):
         preview = output[:_MAX_COLLAPSED_PREVIEW]
         if len(output) > _MAX_COLLAPSED_PREVIEW:
             preview += "…"
-        title_str = f"{icon} {tool_name}  {preview}"
+        title_str = f"{icon} {tool_name}  {escape(preview)}"
         content = self._build_content(output)
         super().__init__(
             content,

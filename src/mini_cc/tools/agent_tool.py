@@ -40,6 +40,7 @@ class AgentTool(BaseTool):
         get_parent_state: Callable[[], QueryState],
         default_timeout: int = 120,
         get_mode: Callable[[], str] | None = None,
+        get_run_id: Callable[[], str | None] | None = None,
         event_queue: asyncio.Queue[Event] | None = None,
         get_budget: Callable[[], Any] | None = None,
     ) -> None:
@@ -47,6 +48,7 @@ class AgentTool(BaseTool):
         self._get_parent_state = get_parent_state
         self._default_timeout = default_timeout
         self._get_mode = get_mode
+        self._get_run_id = get_run_id
         self._event_queue = event_queue
         self._get_budget = get_budget
 
@@ -96,9 +98,10 @@ class AgentTool(BaseTool):
         parsed = AgentToolInput.model_validate(kwargs)
         logger.info("[agent-tool] called, prompt=%s, readonly=%s", parsed.prompt[:120], parsed.readonly)
         mode = self._get_mode() if self._get_mode else "build"
+        run_id = self._get_run_id() if self._get_run_id else None
 
         if parsed.dispatch_plan_json:
-            return await self._execute_dispatch_plan(parsed.dispatch_plan_json, mode)
+            return await self._execute_dispatch_plan(parsed.dispatch_plan_json, mode, run_id)
 
         if not parsed.prompt.strip():
             return ToolResult(output="创建子 Agent 失败: prompt 不能为空", success=False)
@@ -133,6 +136,7 @@ class AgentTool(BaseTool):
                 parent_state=parent_state,
                 mode=mode,
                 scope_paths=parsed.scope_paths,
+                run_id=run_id,
             )
         except Exception as e:
             if budget is not None and budget_key is not None:
@@ -147,7 +151,7 @@ class AgentTool(BaseTool):
         if self._event_queue is not None:
             await self._event_queue.put(event)
 
-    async def _execute_dispatch_plan(self, dispatch_plan_json: str, mode: str) -> ToolResult:
+    async def _execute_dispatch_plan(self, dispatch_plan_json: str, mode: str, run_id: str | None) -> ToolResult:
         try:
             plan = AgentDispatchPlan.model_validate_json(dispatch_plan_json)
         except Exception as err:
@@ -178,6 +182,7 @@ class AgentTool(BaseTool):
                     fork=False,
                     parent_state=None,
                     mode=mode,
+                    run_id=run_id,
                 )
             except Exception as err:
                 message = f"创建子 Agent 失败: {err}"

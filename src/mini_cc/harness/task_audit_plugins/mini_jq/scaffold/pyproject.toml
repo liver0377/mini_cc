@@ -1,0 +1,11 @@
+[project]
+name = "mini-jq"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+[project.scripts]
+mini-jq = "mini_jq.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

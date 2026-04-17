@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from mini_cc.harness import CheckpointStore, RunHarness, RunState, RunStatus, Step, StepKind, StepStatus
 from mini_cc.harness.iteration import IterationOutcome, IterationReview, IterationScore
+from mini_cc.harness.models import format_local_time
 from mini_cc.tui.screens.run_screen import (
     _RUN_STATUS_COLORS,
     _RUN_STATUS_ICONS,
@@ -174,6 +175,29 @@ class TestRunScreenDataOps:
         lines = screen._documentation_lines(run.run_id)
 
         assert any("## 基本信息" in line for line in lines)
+
+    def test_show_detail_formats_times_in_local_timezone(self, tmp_path):
+        store = CheckpointStore(base_dir=tmp_path)
+        run = _make_run_state()
+        run.created_at = "2026-04-17T02:33:25+00:00"
+        run.updated_at = "2026-04-17T02:49:33+00:00"
+        store.save_state(run)
+
+        screen = RunScreen(store)
+
+        detail = MagicMock()
+        detail.set_class = MagicMock()
+        screen.query_one = MagicMock(return_value=detail)
+        screen._event_lines = MagicMock(return_value=[])
+        screen._review_lines = MagicMock(return_value=[])
+        screen._journal_lines = MagicMock(return_value=[])
+        screen._documentation_lines = MagicMock(return_value=[])
+
+        screen._show_detail(run)
+
+        rendered = detail.update.call_args.args[0]
+        assert f"Created: {format_local_time(run.created_at)}" in rendered
+        assert f"Updated: {format_local_time(run.updated_at)}" in rendered
 
     def test_event_lines_include_resume_metadata(self, tmp_path):
         from mini_cc.harness.events import HarnessEvent

@@ -237,6 +237,7 @@ def create_engine(
         get_parent_state=lambda: engine.state if engine.state else QueryState(),
         event_queue=agent_event_queue,
         get_mode=lambda: ctx_ref[0].mode,
+        get_run_id=lambda: ctx_ref[0].current_run_id,
         get_budget=lambda: ctx_ref[0].agent_budget if ctx_ref else None,
     )
     registry.register(agent_tool)

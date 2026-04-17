@@ -65,6 +65,7 @@ class AgentManager:
         parent_state: QueryState | None = None,
         mode: str = "build",
         scope_paths: list[str] | None = None,
+        run_id: str | None = None,
     ) -> SubAgent:
         agent_id = generate_agent_id()
         normalized_scopes = self._normalize_scope_paths(scope_paths)
@@ -96,7 +97,7 @@ class AgentManager:
             },
         )
 
-        state = self._build_initial_state(config, fork, parent_state, mode)
+        state = self._build_initial_state(config, fork, parent_state, mode, run_id)
         engine, snapshot_svc, interrupt_event = self._build_engine(config)
 
         agent = SubAgent(
@@ -165,6 +166,7 @@ class AgentManager:
         fork: bool,
         parent_state: QueryState | None,
         mode: str = "build",
+        run_id: str | None = None,
     ) -> QueryState:
         if fork and parent_state is not None:
             state = parent_state.model_copy(deep=True)
@@ -187,6 +189,7 @@ class AgentManager:
             system_content = self._prompt_builder.build_for_sub_agent(
                 sub_env,
                 mode=mode,
+                run_id=run_id,
                 context_cwd=str(self._project_root),
             )
             state.messages.insert(0, Message(role=Role.SYSTEM, content=system_content))

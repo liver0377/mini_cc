@@ -31,10 +31,26 @@ from mini_cc.harness import (
     StepStatus,
 )
 from mini_cc.harness.events import HarnessEvent
+from mini_cc.harness.models import format_local_time
 from mini_cc.harness.policy import PolicyAction, PolicyDecision, PolicyEngine
+from mini_cc.harness.step_runner import _QueryDiagnostics
 from mini_cc.harness.supervisor import SupervisorLoop
 from mini_cc.harness.task_audit import TaskAuditRegistry
-from mini_cc.models import Event, Message, Role, TextDelta, ToolCall, ToolResultEvent
+from mini_cc.models import (
+    AgentCompletionEvent,
+    AgentStartEvent,
+    AgentToolCallEvent,
+    AgentToolResultEvent,
+    Event,
+    Message,
+    Role,
+    TextDelta,
+    ToolCall,
+    ToolCallDelta,
+    ToolCallEnd,
+    ToolCallStart,
+    ToolResultEvent,
+)
 from mini_cc.query_engine.engine import QueryEngine
 
 
@@ -128,6 +144,21 @@ class TestCheckpointStore:
 
 
 class TestRunDocGenerator:
+    def test_generate_formats_basic_times_in_local_timezone(self, tmp_path) -> None:
+        store = CheckpointStore(base_dir=tmp_path)
+        run_state = RunState(
+            run_id="run-time",
+            goal="check time formatting",
+            created_at="2026-04-17T02:33:25+00:00",
+            updated_at="2026-04-17T02:49:33+00:00",
+        )
+        store.save_state(run_state)
+
+        doc = RunDocGenerator().generate(run_state, store)
+
+        assert f"| 创建时间 | {format_local_time(run_state.created_at)} |" in doc
+        assert f"| 结束时间 | {format_local_time(run_state.updated_at)} |" in doc
+
     def test_generate_includes_lessons_sections(self, tmp_path) -> None:
         store = CheckpointStore(base_dir=tmp_path)
         run_state = RunState(run_id="run-doc", goal="fix tests")
@@ -682,14 +713,149 @@ class TestIterationOptimizer:
 
 
 class TestStepRunnerQueryIntegration:
-    async def test_query_backed_step_uses_engine_context(self, tmp_path) -> None:
+    async def test_analyze_step_delegates_to_readonly_agent_when_manager_available(self, tmp_path) -> None:
+        class _FakeAgent:
+            def __init__(self) -> None:
+                self.config = type("Config", (), {"agent_id": "agent1234"})()
+                self.task_id = 7
+
+            async def run(self, prompt: str) -> AsyncGenerator[Event, None]:
+                yield TextDelta(content="delegated analysis")
+
+        class _FakeManager:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def create_agent(
+                self,
+                *,
+                prompt: str,
+                readonly: bool = False,
+                fork: bool = False,
+                parent_state=None,
+                mode: str = "build",
+                scope_paths: list[str] | None = None,
+                run_id: str | None = None,
+            ) -> _FakeAgent:
+                self.calls.append(
+                    {
+                        "prompt": prompt,
+                        "readonly": readonly,
+                        "fork": fork,
+                        "parent_state": parent_state,
+                        "mode": mode,
+                        "scope_paths": scope_paths,
+                        "run_id": run_id,
+                    }
+                )
+                return _FakeAgent()
+
         engine_ctx = _make_engine_ctx(tmp_path)
+        fake_manager = _FakeManager()
+        engine_ctx.agent_manager = fake_manager  # type: ignore[assignment]
         runner = StepRunner(engine_ctx=engine_ctx)
-        run_state = RunState(run_id="run-query", goal="test")
+        run_state = RunState(run_id="run-delegate-ro", goal="test")
         step = Step(
             kind=StepKind.ANALYZE_REPO,
             title="Analyze",
-            goal="analyze repository",
+            goal="analyze repo",
+            inputs={"prompt": "inspect repo"},
+        )
+
+        result = await runner.run_step(step, run_state)
+
+        assert result.success is True
+        assert result.summary == "delegated analysis"
+        assert result.metadata["delegated_agent_id"] == "agent1234"
+        assert result.metadata["delegated_agent_readonly"] == "true"
+        assert fake_manager.calls == [
+            {
+                "prompt": "inspect repo",
+                "readonly": True,
+                "fork": False,
+                "parent_state": None,
+                "mode": "plan",
+                "scope_paths": [],
+                "run_id": "run-delegate-ro",
+            }
+        ]
+
+    async def test_edit_step_delegates_to_write_agent_when_manager_available(self, tmp_path) -> None:
+        class _FakeAgent:
+            def __init__(self) -> None:
+                self.config = type("Config", (), {"agent_id": "writer123"})()
+                self.task_id = 9
+
+            async def run(self, prompt: str) -> AsyncGenerator[Event, None]:
+                yield TextDelta(content="delegated edit")
+
+        class _FakeManager:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def create_agent(
+                self,
+                *,
+                prompt: str,
+                readonly: bool = False,
+                fork: bool = False,
+                parent_state=None,
+                mode: str = "build",
+                scope_paths: list[str] | None = None,
+                run_id: str | None = None,
+            ) -> _FakeAgent:
+                self.calls.append(
+                    {
+                        "prompt": prompt,
+                        "readonly": readonly,
+                        "fork": fork,
+                        "parent_state": parent_state,
+                        "mode": mode,
+                        "scope_paths": scope_paths,
+                        "run_id": run_id,
+                    }
+                )
+                return _FakeAgent()
+
+        engine_ctx = _make_engine_ctx(tmp_path)
+        fake_manager = _FakeManager()
+        engine_ctx.agent_manager = fake_manager  # type: ignore[assignment]
+        runner = StepRunner(engine_ctx=engine_ctx)
+        run_state = RunState(run_id="run-delegate-write", goal="test")
+        step = Step(
+            kind=StepKind.EDIT_CODE,
+            title="Execute",
+            goal="edit code",
+            inputs={"prompt": "implement feature"},
+        )
+
+        result = await runner.run_step(step, run_state)
+
+        assert result.success is True
+        assert result.summary == "delegated edit"
+        assert result.metadata["delegated_agent_id"] == "writer123"
+        assert result.metadata["delegated_agent_readonly"] == "false"
+        assert fake_manager.calls == [
+            {
+                "prompt": "implement feature",
+                "readonly": False,
+                "fork": False,
+                "parent_state": None,
+                "mode": "build",
+                "scope_paths": ["."],
+                "run_id": "run-delegate-write",
+            }
+        ]
+
+    async def test_query_backed_step_uses_engine_context(self, tmp_path) -> None:
+        engine_ctx = _make_engine_ctx(tmp_path)
+        engine_ctx.agent_manager = None
+        runner = StepRunner(engine_ctx=engine_ctx)
+        run_state = RunState(run_id="run-query", goal="test")
+        step = Step(
+            kind=StepKind.MAKE_PLAN,
+            title="Plan",
+            goal="make plan",
             inputs={"prompt": "inspect src"},
         )
 
@@ -739,8 +905,11 @@ class TestStepRunnerQueryIntegration:
         result = await runner.run_step(step, run_state)
 
         assert result.success is False
-        assert result.error == "Step timed out after 1 seconds"
+        assert "Step timed out after 1s" in result.error
+        assert "LLM provider never returned any event" in result.error
         assert result.metadata["timeout_seconds"] == "1"
+        assert result.metadata["diag_last_event_type"] == "(none)"
+        assert result.metadata["diag_message_count"] == "1"
         assert engine_ctx.mode == "build"
 
     async def test_bash_step_timeout_is_capped_by_step_budget(self) -> None:
@@ -769,6 +938,73 @@ class TestStepRunnerQueryIntegration:
 
         assert result.success is True
         assert bash.calls == [("pytest", 2000)]
+
+    def test_query_diagnostics_collects_tool_trace_metadata(self) -> None:
+        diag = _QueryDiagnostics()
+
+        diag.record_event(TextDelta(content="working"))
+        diag.record_event(ToolCallStart(tool_call_id="tc_agent", name="agent"))
+        diag.record_event(
+            ToolCallDelta(
+                tool_call_id="tc_agent",
+                arguments_json_delta='{"prompt":"inspect src","readonly":true}',
+            )
+        )
+        diag.record_event(ToolCallEnd(tool_call_id="tc_agent"))
+        diag.record_event(AgentStartEvent(agent_id="agent-12345678", task_id=1, prompt="inspect src"))
+        diag.record_event(AgentToolCallEvent(agent_id="agent-12345678", tool_name="file_read"))
+        diag.record_event(
+            AgentToolResultEvent(
+                agent_id="agent-12345678",
+                tool_name="file_read",
+                success=True,
+                output_preview="ok",
+            )
+        )
+        diag.record_event(
+            AgentCompletionEvent(
+                agent_id="agent-12345678",
+                task_id=1,
+                success=True,
+                output="done",
+                output_path="/tmp/agent.output",
+            )
+        )
+        diag.record_event(ToolResultEvent(tool_call_id="tc_agent", name="agent", output="done", success=True))
+
+        metadata = diag.to_metadata()
+
+        assert "diag_tool_trace" in metadata
+        assert "agent(inspect src)=" in metadata["diag_tool_trace"]
+        assert "agent[agent-12].file_read(success=true" in metadata["diag_tool_trace"]
+
+
+class TestSupervisorMetadata:
+    async def test_step_completed_event_includes_result_metadata(self, tmp_path) -> None:
+        store = CheckpointStore(base_dir=tmp_path)
+
+        async def _handler(step: Step, run_state: RunState) -> StepResult:
+            return StepResult(
+                success=True,
+                summary="ok",
+                progress_made=True,
+                metadata={"diag_tool_trace": "agent(readonly=true)=1.2s"},
+            )
+
+        runner = StepRunner(handlers={StepKind.ANALYZE_REPO: _handler})
+        supervisor = SupervisorLoop(store=store, step_runner=runner)
+        run_state = RunState(
+            run_id="run-event-meta",
+            goal="inspect metadata",
+            steps=[Step(id="step-1", kind=StepKind.ANALYZE_REPO, title="Analyze", goal="analyze")],
+        )
+        store.save_state(run_state)
+
+        await supervisor.run(run_state)
+
+        events = store.load_events(run_state.run_id)
+        step_completed = next(event for event in events if event.event_type == "step_completed")
+        assert step_completed.data["diag_tool_trace"] == "agent(readonly=true)=1.2s"
 
 
 class TestAgentBudget:

@@ -4,6 +4,7 @@ import inspect
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -11,6 +12,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header, Static
 
 from mini_cc.harness import CheckpointStore, RunHarness, RunState, RunStatus, StepStatus
+from mini_cc.harness.models import format_local_time
 from mini_cc.tui.theme import DEFAULT_THEME
 
 _T = DEFAULT_THEME
@@ -238,8 +240,8 @@ class RunScreen(Screen[None]):
             f"  状态: {_RUN_STATUS_ICONS.get(run.status, '?')} {run.status.value}",
             f"  Phase: {run.phase}",
             f"  Goal: {run.goal}",
-            f"  Created: {run.created_at}",
-            f"  Updated: {run.updated_at}",
+            f"  Created: {format_local_time(run.created_at)}",
+            f"  Updated: {format_local_time(run.updated_at)}",
             f"  Current Step: {run.current_step_id or '(无)'}",
             f"  Failures: {run.failure_count}",
             f"  No Progress: {run.consecutive_no_progress_count}",
@@ -267,7 +269,7 @@ class RunScreen(Screen[None]):
         lines: list[str] = []
         for step in run.steps:
             icon = _STEP_STATUS_ICONS.get(step.status, "?")
-            summary = step.summary[:80] if step.summary else step.goal[:80]
+            summary = escape((step.summary[:80] if step.summary else step.goal)[:80])
             lines.append(f"  {icon} [bold]{step.title}[/] [dim]{step.status.value}[/] [dim]{summary}[/]")
         return lines
 

@@ -5,11 +5,25 @@ from pathlib import Path
 
 from mini_cc.harness.task_audit import TaskAuditProfile, TaskAuditResult
 
+_MINI_JQ_AUDIT_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "task_audit" / "mini_jq.py"
+_MINI_JQ_SCAFFOLD_DIR = str(Path(__file__).parent / "mini_jq" / "scaffold")
+
 
 class MiniJQAuditProfile(TaskAuditProfile):
     profile_id = "mini_jq"
     display_name = "Mini jq"
     artifact_name = "jq_audit.json"
+    keywords = ["mini-jq", "mini jq", "jq 子集"]
+    description = (
+        "Mini jq JSON 处理器语义审计：对比系统 jq 对输入执行 filter 表达式的输出，"
+        "覆盖 identity、字段访问、管道、数组迭代等核心语义。"
+    )
+    scaffold_dir = _MINI_JQ_SCAFFOLD_DIR
+    default_test_command = "uv run pytest -q"
+    bootstrap_guidance = (
+        "如果目标涉及 mini-jq，请确保项目最终提供可执行入口 `mini-jq`，并让基础测试与后续语义审计都能直接调用它。"
+    )
+    audit_command = f"uv run python {_MINI_JQ_AUDIT_SCRIPT}"
 
     def parse_result(self, artifact_path: str) -> TaskAuditResult | None:
         path = Path(artifact_path)

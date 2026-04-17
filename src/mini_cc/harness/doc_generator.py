@@ -5,7 +5,7 @@ from datetime import datetime
 from mini_cc.harness.checkpoint import CheckpointStore
 from mini_cc.harness.events import HarnessEvent
 from mini_cc.harness.iteration import IterationOutcome, IterationReview, IterationSnapshot
-from mini_cc.harness.models import RunState, StepKind, StepStatus
+from mini_cc.harness.models import RunState, StepKind, StepStatus, format_local_time
 from mini_cc.harness.task_audit import TaskAuditRegistry
 
 
@@ -49,8 +49,8 @@ class RunDocGenerator:
             f"| 目标 | {run_state.goal} |",
             f"| 状态 | {run_state.status.value} |",
             f"| 阶段 | {run_state.phase} |",
-            f"| 创建时间 | {run_state.created_at} |",
-            f"| 结束时间 | {run_state.updated_at} |",
+            f"| 创建时间 | {format_local_time(run_state.created_at)} |",
+            f"| 结束时间 | {format_local_time(run_state.updated_at)} |",
             f"| 运行耗时 | {self._format_duration(started_at, ended_at)} |",
             f"| 终止原因 | {terminal_reason} |",
             f"| 总 Step 数 | {len(run_state.steps)} |",

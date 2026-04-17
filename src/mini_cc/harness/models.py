@@ -19,6 +19,16 @@ def deadline_after(seconds: int) -> str:
     return (datetime.now(UTC) + timedelta(seconds=seconds)).isoformat()
 
 
+def format_local_time(value: str) -> str:
+    dt = datetime.fromisoformat(value).astimezone()
+    offset = dt.utcoffset() or timedelta()
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    hours, minutes = divmod(abs(total_minutes), 60)
+    tz_name = dt.tzname() or "local"
+    return f"{dt.strftime('%Y-%m-%d %H:%M:%S')} {tz_name} (UTC{sign}{hours:02d}:{minutes:02d})"
+
+
 class RunStatus(StrEnum):
     CREATED = "created"
     PLANNING = "planning"

@@ -27,6 +27,22 @@ class TaskAuditProfile:
     profile_id: str = ""
     display_name: str = ""
     artifact_name: str = "audit.json"
+    keywords: list[str] = []
+    description: str = ""
+    scaffold_dir: str | None = None
+    default_test_command: str = "uv run pytest -q"
+    bootstrap_guidance: str = ""
+    audit_command: str | None = None
+
+    def match_score(self, user_text: str) -> float:
+        if not self.keywords:
+            return 0.0
+        normalized = user_text.lower().replace("_", "-")
+        hits = 0
+        for kw in self.keywords:
+            if kw.lower() in normalized:
+                hits += 1
+        return hits / len(self.keywords) if self.keywords else 0.0
 
     def parse_result(self, artifact_path: str) -> TaskAuditResult | None:
         raise NotImplementedError
@@ -120,6 +136,9 @@ class TaskAuditRegistry:
         if profile_id is None:
             return None
         return self._profiles.get(profile_id)
+
+    def all_profiles(self) -> list[TaskAuditProfile]:
+        return list(self._profiles.values())
 
     def resolve_for_run(self, metadata: dict[str, str]) -> TaskAuditProfile | None:
         return self.get(metadata.get("audit_profile"))

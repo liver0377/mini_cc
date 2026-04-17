@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from mini_cc.harness.models import Step, StepKind
+from mini_cc.harness.task_audit import TaskAuditProfile, TaskAuditRegistry
 
 BOOTSTRAP_FLOW_METADATA = "bootstrap_flow"
-_MINI_JQ_AUDIT_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "task_audit" / "mini_jq.py"
+BOOTSTRAP_STEP_BUDGET_SECONDS = 900
+EDIT_CODE_STEP_BUDGET_SECONDS = 900
+
 _IGNORED_NAMES = {
     ".git",
     ".mini_cc",
@@ -30,14 +34,19 @@ def is_bootstrap_candidate(cwd: Path) -> bool:
     return True
 
 
-def prepare_run_request(user_text: str, mode: str, cwd: Path) -> tuple[list[Step], dict[str, str]]:
+def prepare_run_request(
+    user_text: str,
+    mode: str,
+    cwd: Path,
+    registry: TaskAuditRegistry | None = None,
+) -> tuple[list[Step], dict[str, str]]:
     if mode == "plan":
         return (
             [
                 Step(
                     kind=StepKind.MAKE_PLAN,
                     title="Plan",
-                    goal=f"为以下目标制定可执行计划：{user_text}",
+                    goal="为用户目标制定可执行计划",
                     inputs={"prompt": user_text},
                 ),
                 Step(
@@ -49,42 +58,46 @@ def prepare_run_request(user_text: str, mode: str, cwd: Path) -> tuple[list[Step
             {},
         )
 
+    effective_registry = registry or TaskAuditRegistry()
+    profile = _match_audit_profile(user_text, effective_registry)
     steps: list[Step] = []
-    metadata = _task_metadata(user_text)
+    metadata = _build_metadata(profile)
+
     if is_bootstrap_candidate(cwd):
+        _apply_scaffold(profile, cwd)
+        audit_context = _build_audit_context(effective_registry)
+        bootstrap_prompt = (
+            "当前工作目录几乎为空。请先搭建一个最小可运行的项目骨架，至少包含："
+            "依赖/项目配置、源码入口、测试目录、基础测试或验收脚本，以及后续实现需要的最小文件结构。"
+            f"{profile.bootstrap_guidance if profile else ''}"
+            f"{audit_context}"
+            f"所有 bootstrap 工作都必须围绕这个目标展开：{user_text}"
+        )
         steps.append(
             Step(
                 kind=StepKind.BOOTSTRAP_PROJECT,
                 title="Bootstrap",
-                goal=f"为当前空仓库搭建最小可运行项目骨架，使后续可以围绕以下目标持续实现与验证：{user_text}",
-                inputs={
-                    "prompt": (
-                        "当前工作目录几乎为空。请先搭建一个最小可运行的项目骨架，至少包含："
-                        "依赖/项目配置、源码入口、测试目录、基础测试或验收脚本，以及后续实现需要的最小文件结构。"
-                        f"{_bootstrap_task_guidance(user_text)}"
-                        f"所有 bootstrap 工作都必须围绕这个目标展开：{user_text}"
-                    )
-                },
+                goal="为当前空仓库搭建最小可运行项目骨架",
+                inputs={"prompt": bootstrap_prompt},
+                budget_seconds=BOOTSTRAP_STEP_BUDGET_SECONDS,
             )
         )
-        metadata = {
-            **metadata,
-            BOOTSTRAP_FLOW_METADATA: "true",
-        }
-        metadata.setdefault("test_command", "uv run pytest -q")
+        metadata[BOOTSTRAP_FLOW_METADATA] = "true"
+        metadata.setdefault("test_command", profile.default_test_command if profile else "uv run pytest -q")
 
     steps.extend(
         [
             Step(
                 kind=StepKind.ANALYZE_REPO,
                 title="Analyze",
-                goal=f"分析当前仓库，与以下目标最相关的文件、约束和风险：{user_text}",
+                goal="分析当前仓库，找出与目标最相关的文件、约束和风险",
             ),
             Step(
                 kind=StepKind.EDIT_CODE,
                 title="Execute",
-                goal=user_text,
+                goal="根据目标实现代码",
                 inputs={"prompt": user_text},
+                budget_seconds=EDIT_CODE_STEP_BUDGET_SECONDS,
             ),
             Step(
                 kind=StepKind.FINALIZE,
@@ -96,6 +109,58 @@ def prepare_run_request(user_text: str, mode: str, cwd: Path) -> tuple[list[Step
     return steps, metadata
 
 
+def _match_audit_profile(user_text: str, registry: TaskAuditRegistry) -> TaskAuditProfile | None:
+    best_profile: TaskAuditProfile | None = None
+    best_score = 0.0
+    for profile in registry.all_profiles():
+        score = profile.match_score(user_text)
+        if score > best_score:
+            best_score = score
+            best_profile = profile
+    if best_score > 0.0:
+        return best_profile
+    return None
+
+
+def _build_metadata(profile: TaskAuditProfile | None) -> dict[str, str]:
+    if profile is None:
+        return {}
+    metadata: dict[str, str] = {"audit_profile": profile.profile_id}
+    if profile.audit_command:
+        metadata["task_audit_command"] = profile.audit_command
+    return metadata
+
+
+def _build_audit_context(registry: TaskAuditRegistry) -> str:
+    profiles = registry.all_profiles()
+    if not profiles:
+        return ""
+    lines = ["\n\n## 当前系统支持的审计任务\n"]
+    lines.append("| 任务 ID | 名称 | 关键词 | 说明 |")
+    lines.append("|---------|------|--------|------|")
+    for p in profiles:
+        kw = "、".join(p.keywords) if p.keywords else "-"
+        desc = p.description or "-"
+        lines.append(f"| {p.profile_id} | {p.display_name} | {kw} | {desc} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _apply_scaffold(profile: TaskAuditProfile | None, cwd: Path) -> None:
+    if profile is None or profile.scaffold_dir is None:
+        return
+    scaffold_path = Path(profile.scaffold_dir)
+    if not scaffold_path.is_dir():
+        return
+    for src in scaffold_path.rglob("*"):
+        if src.is_dir():
+            continue
+        rel = src.relative_to(scaffold_path)
+        dest = cwd / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+
+
 def _should_ignore_entry(path: Path) -> bool:
     if path.name in _IGNORED_NAMES:
         return True
@@ -104,26 +169,3 @@ def _should_ignore_entry(path: Path) -> bool:
     if path.is_file() and path.suffix.lower() in _IGNORED_SUFFIXES:
         return True
     return False
-
-
-def _task_metadata(user_text: str) -> dict[str, str]:
-    if _looks_like_mini_jq_task(user_text):
-        return {
-            "audit_profile": "mini_jq",
-            "task_audit_command": f"uv run python {_MINI_JQ_AUDIT_SCRIPT}",
-        }
-    return {}
-
-
-def _looks_like_mini_jq_task(user_text: str) -> bool:
-    normalized = user_text.lower().replace("_", "-")
-    return "mini-jq" in normalized or "mini jq" in normalized or "jq 子集" in user_text
-
-
-def _bootstrap_task_guidance(user_text: str) -> str:
-    if _looks_like_mini_jq_task(user_text):
-        return (
-            "如果目标涉及 mini-jq，请确保项目最终提供可执行入口 `mini-jq`，"
-            "并让基础测试与后续语义审计都能直接调用它。"
-        )
-    return ""

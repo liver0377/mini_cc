@@ -231,6 +231,7 @@ class SupervisorLoop:
                         "no_progress_count": str(run_state.consecutive_no_progress_count),
                         "replan_count": str(run_state.replan_count),
                         "inserted_steps": ",".join(next_step.kind.value for next_step in next_steps),
+                        **result.metadata,
                     },
                 ),
                 run_state,
