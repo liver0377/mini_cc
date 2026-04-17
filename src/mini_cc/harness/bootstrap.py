@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from mini_cc.harness.models import Step, StepKind
+from mini_cc.harness.models import Step, StepKind, WorkItem
 from mini_cc.harness.task_audit import TaskAuditProfile, TaskAuditRegistry
 
 BOOTSTRAP_FLOW_METADATA = "bootstrap_flow"
@@ -80,6 +80,7 @@ def prepare_run_request(
                 goal="为当前空仓库搭建最小可运行项目骨架",
                 inputs={"prompt": bootstrap_prompt},
                 budget_seconds=BOOTSTRAP_STEP_BUDGET_SECONDS,
+                work_items=_bootstrap_work_items(user_text, bootstrap_prompt, profile),
             )
         )
         metadata[BOOTSTRAP_FLOW_METADATA] = "true"
@@ -98,6 +99,7 @@ def prepare_run_request(
                 goal="根据目标实现代码",
                 inputs={"prompt": user_text},
                 budget_seconds=EDIT_CODE_STEP_BUDGET_SECONDS,
+                work_items=_edit_work_items(user_text),
             ),
             Step(
                 kind=StepKind.FINALIZE,
@@ -169,3 +171,99 @@ def _should_ignore_entry(path: Path) -> bool:
     if path.is_file() and path.suffix.lower() in _IGNORED_SUFFIXES:
         return True
     return False
+
+
+def _bootstrap_work_items(user_text: str, bootstrap_prompt: str, profile: TaskAuditProfile | None) -> list[WorkItem]:
+    bootstrap_hint = profile.bootstrap_guidance if profile is not None else ""
+    return [
+        WorkItem(
+            id="bootstrap.inspect_repo",
+            kind="bootstrap.inspect_repo",
+            title="Inspect Repo",
+            goal="检查当前仓库状态，确认已有 scaffold、源码入口、测试入口和缺失部分。",
+            role="analyzer",
+            inputs={"prompt": bootstrap_prompt},
+        ),
+        WorkItem(
+            id="bootstrap.detect_scaffold",
+            kind="bootstrap.detect_scaffold",
+            title="Detect Scaffold",
+            goal=(
+                "识别当前项目骨架是否已足够支撑后续实现。"
+                "如果 scaffold 已经存在，明确指出可复用部分和仍需补齐的最小缺口。"
+            ),
+            role="analyzer",
+            depends_on=["bootstrap.inspect_repo"],
+            inputs={"prompt": bootstrap_prompt},
+        ),
+        WorkItem(
+            id="bootstrap.generate_skeleton",
+            kind="bootstrap.generate_skeleton",
+            title="Generate Skeleton",
+            goal=(
+                "围绕目标生成最小可运行项目骨架方案，明确需要的源码、测试、配置和入口文件。"
+                f"{bootstrap_hint} 用户目标：{user_text}"
+            ),
+            role="implementer",
+            depends_on=["bootstrap.detect_scaffold"],
+            inputs={"prompt": bootstrap_prompt},
+        ),
+        WorkItem(
+            id="bootstrap.write_skeleton",
+            kind="bootstrap.write_skeleton",
+            title="Write Skeleton",
+            goal="将项目骨架落盘，并确保目录结构、测试和入口文件可运行。",
+            role="implementer",
+            depends_on=["bootstrap.generate_skeleton"],
+            inputs={"prompt": bootstrap_prompt},
+        ),
+        WorkItem(
+            id="bootstrap.verify_bootstrap",
+            kind="bootstrap.verify_bootstrap",
+            title="Verify Bootstrap",
+            goal="复核 bootstrap 结果，确认骨架已满足后续 analyze/edit 的最小前提，并指出剩余风险。",
+            role="reporter",
+            depends_on=["bootstrap.write_skeleton"],
+            inputs={"prompt": bootstrap_prompt},
+        ),
+    ]
+
+
+def _edit_work_items(user_text: str) -> list[WorkItem]:
+    return [
+        WorkItem(
+            id="edit.select_target_slice",
+            kind="edit.select_target_slice",
+            title="Select Target Slice",
+            goal=f"定位最相关的实现切片、文件边界和风险点。目标：{user_text}",
+            role="analyzer",
+            inputs={"prompt": user_text},
+        ),
+        WorkItem(
+            id="edit.apply_patch_slice",
+            kind="edit.apply_patch_slice",
+            title="Apply Patch Slice",
+            goal=f"在最小必要范围内完成实现或修复，并保持变更可验证。目标：{user_text}",
+            role="implementer",
+            depends_on=["edit.select_target_slice"],
+            inputs={"prompt": user_text},
+        ),
+        WorkItem(
+            id="edit.self_check",
+            kind="edit.self_check",
+            title="Self Check",
+            goal="检查本轮修改是否覆盖目标、是否存在明显遗漏，以及后续验证应重点关注什么。",
+            role="reporter",
+            depends_on=["edit.apply_patch_slice"],
+            inputs={"prompt": user_text},
+        ),
+        WorkItem(
+            id="edit.emit_change_summary",
+            kind="edit.emit_change_summary",
+            title="Emit Change Summary",
+            goal="总结本轮修改、影响范围和待验证项，为后续 run_tests / finalize 提供清晰上下文。",
+            role="reporter",
+            depends_on=["edit.self_check"],
+            inputs={"prompt": user_text},
+        ),
+    ]

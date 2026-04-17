@@ -6,10 +6,10 @@ from typing import TypeVar
 
 from mini_cc.harness.events import HarnessEvent
 from mini_cc.harness.iteration import IterationReview, IterationSnapshot
-from mini_cc.harness.models import RunState
+from mini_cc.harness.models import RunState, TraceSpan
 
 _RUNS_DIR = Path.cwd() / ".mini_cc" / "runs"
-JsonLineModel = TypeVar("JsonLineModel", HarnessEvent, IterationSnapshot, IterationReview)
+JsonLineModel = TypeVar("JsonLineModel", HarnessEvent, IterationSnapshot, IterationReview, TraceSpan)
 
 
 def _sanitize_filename(name: str) -> str:
@@ -52,6 +52,9 @@ class CheckpointStore:
     def reviews_path(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "iteration_reviews.jsonl"
 
+    def trace_spans_path(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "trace_spans.jsonl"
+
     def save_state(self, state: RunState) -> Path:
         run_dir = self.run_dir(state.run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -71,6 +74,9 @@ class CheckpointStore:
 
     def append_iteration_review(self, review: IterationReview) -> Path:
         return self._append_jsonl(self.reviews_path(review.run_id), review.model_dump_json())
+
+    def append_trace_span(self, span: TraceSpan) -> Path:
+        return self._append_jsonl(self.trace_spans_path(span.run_id), span.model_dump_json())
 
     def append_journal_entry(self, run_id: str, content: str) -> Path:
         path = self.journal_path(run_id)
@@ -93,6 +99,9 @@ class CheckpointStore:
 
     def load_iteration_reviews(self, run_id: str) -> list[IterationReview]:
         return self._load_jsonl(self.reviews_path(run_id), IterationReview)
+
+    def load_trace_spans(self, run_id: str) -> list[TraceSpan]:
+        return self._load_jsonl(self.trace_spans_path(run_id), TraceSpan)
 
     def latest_iteration_snapshot(self, run_id: str) -> IterationSnapshot | None:
         snapshots = self.load_iteration_snapshots(run_id)

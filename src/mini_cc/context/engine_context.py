@@ -9,6 +9,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 from rich import print as rprint
 
@@ -23,6 +24,10 @@ from mini_cc.task.service import TaskService
 from mini_cc.tool_executor.executor import StreamingToolExecutor
 from mini_cc.tools import create_default_registry
 from mini_cc.tools.agent_tool import AgentTool
+
+if TYPE_CHECKING:
+    from mini_cc.agent.dispatcher import AgentDispatcher
+    from mini_cc.harness.models import AgentBudget
 
 
 class EngineContext:
@@ -41,6 +46,7 @@ class EngineContext:
         agent_manager: AgentManager | None = None,
         lifecycle_bus: AgentEventBus | None = None,
         completion_queue: asyncio.Queue[AgentCompletionEvent] | None = None,
+        agent_dispatcher: AgentDispatcher | None = None,
         mode: str = "build",
         model: str = "",
         base_interrupt_event: threading.Event | None = None,
@@ -51,6 +57,7 @@ class EngineContext:
         self.agent_manager = agent_manager
         self.lifecycle_bus = lifecycle_bus
         self.completion_queue = completion_queue
+        self.agent_dispatcher = agent_dispatcher
         self.model = model
         self._base_interrupt_event = base_interrupt_event
         self._mode_var.set(mode)
@@ -162,6 +169,7 @@ def create_engine(
         rprint("[dim]请在 .env 文件或环境变量中设置 OPENAI_API_KEY[/]")
         sys.exit(1)
 
+    from mini_cc.agent.dispatcher import AgentDispatcher
     from mini_cc.providers.openai import OpenAIProvider
 
     provider = OpenAIProvider(
@@ -218,6 +226,11 @@ def create_engine(
         lifecycle_bus=lifecycle_bus,
     )
 
+    agent_dispatcher = AgentDispatcher(
+        manager=agent_manager,
+        get_budget=lambda: cast(AgentBudget | None, ctx_ref[0].agent_budget if ctx_ref else None),
+    )
+
     engine_ctx = EngineContext(
         engine=engine,
         prompt_builder=prompt_builder,
@@ -225,6 +238,7 @@ def create_engine(
         agent_manager=agent_manager,
         lifecycle_bus=lifecycle_bus,
         completion_queue=completion_queue,
+        agent_dispatcher=agent_dispatcher,
         model=config.model,
         base_interrupt_event=interrupt_flag,
     )
@@ -234,11 +248,11 @@ def create_engine(
 
     agent_tool = AgentTool(
         manager=agent_manager,
+        dispatcher=agent_dispatcher,
         get_parent_state=lambda: engine.state if engine.state else QueryState(),
         event_queue=agent_event_queue,
         get_mode=lambda: ctx_ref[0].mode,
         get_run_id=lambda: ctx_ref[0].current_run_id,
-        get_budget=lambda: ctx_ref[0].agent_budget if ctx_ref else None,
     )
     registry.register(agent_tool)
 

@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mini_cc.harness.models import RunHealth, RunState, Step, StepKind, StepResult
+from mini_cc.harness.models import FailureClass, RunHealth, RunState, Step, StepKind, StepResult
 
 
 class RunJudge:
     def assess(self, run_state: RunState, step: Step, result: StepResult) -> RunHealth:
         if step.kind == StepKind.RUN_TASK_AUDIT:
             return self._assess_audit(run_state, result)
+        if result.failure_class == FailureClass.TRANSIENT_PROVIDER:
+            return RunHealth.STALLED
         if result.timed_out:
             if run_state.failure_count >= run_state.retry_policy.max_consecutive_failures:
                 return RunHealth.BLOCKED
@@ -25,6 +27,8 @@ class RunJudge:
         return RunHealth.STALLED
 
     def _assess_audit(self, run_state: RunState, result: StepResult) -> RunHealth:
+        if result.failure_class == FailureClass.TRANSIENT_PROVIDER:
+            return RunHealth.STALLED
         if result.timed_out:
             if run_state.failure_count >= run_state.retry_policy.max_consecutive_failures:
                 return RunHealth.BLOCKED

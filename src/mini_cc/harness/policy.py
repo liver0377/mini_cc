@@ -5,12 +5,13 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-from mini_cc.harness.models import RunHealth, RunState, RunStatus, Step, StepKind, StepResult
+from mini_cc.harness.models import FailureClass, RunHealth, RunState, RunStatus, Step, StepKind, StepResult
 
 
 class PolicyAction(StrEnum):
     CONTINUE = "continue"
     RETRY = "retry"
+    COOLDOWN = "cooldown"
     REPLAN = "replan"
     BLOCK = "block"
     FAIL = "fail"
@@ -23,6 +24,7 @@ class PolicyDecision(BaseModel):
     reason: str
     insert_steps: list[Step] = Field(default_factory=list)
     terminal_status: RunStatus | None = None
+    cooldown_seconds: int | None = None
 
 
 class PolicyEngine:
@@ -89,11 +91,28 @@ class PolicyEngine:
                 )
             return PolicyDecision(action=PolicyAction.CONTINUE, reason="step succeeded")
 
+        if result.failure_class == FailureClass.TRANSIENT_PROVIDER:
+            if run_state.provider_cooldown_count >= 3:
+                return PolicyDecision(
+                    action=PolicyAction.FAIL,
+                    reason="provider remained unavailable after repeated cooldowns",
+                    terminal_status=RunStatus.WAITING_HUMAN,
+                )
+            cooldown_seconds = self._provider_cooldown_seconds(run_state.provider_cooldown_count)
+            return PolicyDecision(
+                action=PolicyAction.COOLDOWN,
+                reason=f"provider transient failure; back off for {cooldown_seconds} seconds",
+                cooldown_seconds=cooldown_seconds,
+            )
+
         if result.timed_out:
             if step.retry_count < run_state.retry_policy.max_step_retries and result.retryable:
                 return PolicyDecision(action=PolicyAction.RETRY, reason="step timed out but retry budget remains")
 
-            if health == RunHealth.BLOCKED or run_state.failure_count >= run_state.retry_policy.max_consecutive_failures:
+            if (
+                health == RunHealth.BLOCKED
+                or run_state.failure_count >= run_state.retry_policy.max_consecutive_failures
+            ):
                 return PolicyDecision(
                     action=PolicyAction.BLOCK,
                     reason="run is blocked by repeated step timeouts",
@@ -215,3 +234,7 @@ class PolicyEngine:
                 "Reduce scope, split work, or choose a faster verification command before retrying."
             ),
         )
+
+    def _provider_cooldown_seconds(self, attempt: int) -> int:
+        schedule = [30, 120, 300]
+        return schedule[min(attempt, len(schedule) - 1)]

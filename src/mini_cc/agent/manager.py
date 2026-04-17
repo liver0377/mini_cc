@@ -66,6 +66,9 @@ class AgentManager:
         mode: str = "build",
         scope_paths: list[str] | None = None,
         run_id: str | None = None,
+        step_id: str | None = None,
+        work_item_id: str | None = None,
+        role: str | None = None,
     ) -> SubAgent:
         agent_id = generate_agent_id()
         normalized_scopes = self._normalize_scope_paths(scope_paths)
@@ -94,6 +97,10 @@ class AgentManager:
                 "scope_paths": normalized_scopes,
                 "base_version_stamp": base_version_stamp,
                 "readonly": readonly,
+                "run_id": run_id or "",
+                "step_id": step_id or self._current_step_id or "",
+                "work_item_id": work_item_id or "",
+                "role": role or "",
             },
         )
 
@@ -122,7 +129,7 @@ class AgentManager:
                 AgentLifecycleEvent(
                     event_type="created",
                     agent_id=agent_id,
-                    source_step_id=self._current_step_id,
+                    source_step_id=step_id or self._current_step_id,
                     readonly=readonly,
                     scope_paths=normalized_scopes,
                 )

@@ -516,7 +516,7 @@ class TestHarnessLocalRepoE2E:
 
         assert restored.status == RunStatus.COMPLETED
         assert run_tests_step.status == StepStatus.FAILED_RETRYABLE
-        assert run_tests_step.error == "Step timed out after 1 seconds"
+        assert run_tests_step.error == "Step timed out after 1s"
         assert timeout_replans
         assert any(step.kind == StepKind.MAKE_PLAN and step.status == StepStatus.SUCCEEDED for step in timeout_replans)
         assert any("timed out step was `run_tests`" in step.goal for step in timeout_replans)

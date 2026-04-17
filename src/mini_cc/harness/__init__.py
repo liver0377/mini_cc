@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from mini_cc.harness.bootstrap import BOOTSTRAP_FLOW_METADATA, is_bootstrap_candidate, prepare_run_request
 from mini_cc.harness.checkpoint import CheckpointStore
+from mini_cc.harness.dispatch_roles import role_for_step
 from mini_cc.harness.doc_generator import RunDocGenerator
 from mini_cc.harness.events import HarnessEvent
 from mini_cc.harness.iteration import (
@@ -15,6 +16,7 @@ from mini_cc.harness.judge import RunJudge
 from mini_cc.harness.models import (
     AgentBudget,
     AgentTrace,
+    FailureClass,
     RetryPolicy,
     RunBudget,
     RunHealth,
@@ -24,9 +26,13 @@ from mini_cc.harness.models import (
     StepKind,
     StepResult,
     StepStatus,
+    TraceSpan,
+    WorkItem,
+    WorkItemStatus,
 )
 from mini_cc.harness.policy import PolicyAction, PolicyDecision, PolicyEngine
 from mini_cc.harness.runner import RunHarness
+from mini_cc.harness.scheduler import ExecutionCandidate, RejectedCandidate, Scheduler, SchedulingDecision
 from mini_cc.harness.step_runner import StepRunner
 from mini_cc.harness.supervisor import SupervisorLoop
 from mini_cc.harness.task_audit import TaskAuditProfile, TaskAuditRegistry, TaskAuditResult
@@ -37,6 +43,7 @@ __all__ = [
     "AgentTrace",
     "BOOTSTRAP_FLOW_METADATA",
     "CheckpointStore",
+    "FailureClass",
     "HarnessEvent",
     "RunDocGenerator",
     "IterationOptimizer",
@@ -47,6 +54,7 @@ __all__ = [
     "PolicyAction",
     "PolicyDecision",
     "PolicyEngine",
+    "role_for_step",
     "is_bootstrap_candidate",
     "prepare_run_request",
     "RetryPolicy",
@@ -56,6 +64,10 @@ __all__ = [
     "RunJudge",
     "RunState",
     "RunStatus",
+    "ExecutionCandidate",
+    "RejectedCandidate",
+    "Scheduler",
+    "SchedulingDecision",
     "Step",
     "StepKind",
     "StepResult",
@@ -66,4 +78,7 @@ __all__ = [
     "TaskAuditProfile",
     "TaskAuditRegistry",
     "TaskAuditResult",
+    "TraceSpan",
+    "WorkItem",
+    "WorkItemStatus",
 ]

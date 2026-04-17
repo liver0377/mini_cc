@@ -12,7 +12,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header, Static
 
 from mini_cc.harness import CheckpointStore, RunHarness, RunState, RunStatus, StepStatus
-from mini_cc.harness.models import format_local_time
+from mini_cc.harness.models import TraceSpan, format_local_time
 from mini_cc.tui.theme import DEFAULT_THEME
 
 _T = DEFAULT_THEME
@@ -21,6 +21,7 @@ _RUN_STATUS_ICONS: dict[RunStatus, str] = {
     RunStatus.CREATED: "⏳",
     RunStatus.PLANNING: "✎",
     RunStatus.RUNNING: "▶",
+    RunStatus.COOLDOWN: "⏸",
     RunStatus.VERIFYING: "✓",
     RunStatus.BLOCKED: "⚠",
     RunStatus.WAITING_HUMAN: "…",
@@ -34,6 +35,7 @@ _RUN_STATUS_COLORS: dict[RunStatus, str] = {
     RunStatus.CREATED: "#d29922",
     RunStatus.PLANNING: "#58a6ff",
     RunStatus.RUNNING: "#238636",
+    RunStatus.COOLDOWN: "#8b949e",
     RunStatus.VERIFYING: "#1f6feb",
     RunStatus.BLOCKED: "#d29922",
     RunStatus.WAITING_HUMAN: "#8b949e",
@@ -232,6 +234,7 @@ class RunScreen(Screen[None]):
         artifact_lines = self._artifact_lines(run)
         event_lines = self._event_lines(run.run_id)
         review_lines = self._review_lines(run.run_id)
+        trace_lines = self._trace_lines(run.run_id)
         journal_lines = self._journal_lines(run.run_id)
         documentation_lines = self._documentation_lines(run.run_id)
 
@@ -254,6 +257,8 @@ class RunScreen(Screen[None]):
             parts.extend(["", "[bold]Artifacts:[/]", *artifact_lines])
         if review_lines:
             parts.extend(["", "[bold]Iteration Reviews:[/]", *review_lines])
+        if trace_lines:
+            parts.extend(["", "[bold]Trace:[/]", *trace_lines])
         if journal_lines:
             parts.extend(["", "[bold]Journal Tail:[/]", *journal_lines])
         if documentation_lines:
@@ -294,8 +299,24 @@ class RunScreen(Screen[None]):
             details: list[str] = []
             if "decision" in event.data:
                 details.append(f"decision={event.data['decision']}")
+            if "scheduler_considered" in event.data:
+                details.append(f"considered={event.data['scheduler_considered']}")
+            if "scheduler_rejected" in event.data and event.data["scheduler_rejected"]:
+                details.append(f"rejected={event.data['scheduler_rejected']}")
             if "invalidated_agents" in event.data:
                 details.append(f"invalidated_agents={event.data['invalidated_agents']}")
+            if "trace_span_count" in event.data:
+                details.append(f"trace_spans={event.data['trace_span_count']}")
+            if "trace_tool_count" in event.data:
+                details.append(f"tools={event.data['trace_tool_count']}")
+            if "trace_agent_count" in event.data:
+                details.append(f"agents={event.data['trace_agent_count']}")
+            if "trace_elapsed_ms" in event.data:
+                details.append(f"elapsed={self._format_trace_duration_str(event.data['trace_elapsed_ms'])}")
+            if "trace_first_event_ms" in event.data:
+                details.append(f"first_event={self._format_trace_duration_str(event.data['trace_first_event_ms'])}")
+            if "trace_first_token_ms" in event.data:
+                details.append(f"first_token={self._format_trace_duration_str(event.data['trace_first_token_ms'])}")
             suffix = f" [dim]({' '.join(details)})[/]" if details else ""
             lines.append(f"  [dim]{event.timestamp}[/] [bold]{event.event_type}[/]{step_label} {event.message}{suffix}")
         return lines
@@ -311,6 +332,22 @@ class RunScreen(Screen[None]):
                 f"  [bold]{review.step_id}[/] [dim]{review.outcome.value}[/] "
                 f"[dim]{review.root_cause[:90]}[/] [dim]next={recommendation}[/]"
             )
+        return lines
+
+    def _trace_lines(self, run_id: str) -> list[str]:
+        spans = self._store.load_trace_spans(run_id)
+        if not spans:
+            return []
+        children: dict[str, list[TraceSpan]] = {}
+        roots: list[TraceSpan] = []
+        for span in spans:
+            if span.parent_span_id is None:
+                roots.append(span)
+                continue
+            children.setdefault(span.parent_span_id, []).append(span)
+        lines: list[str] = []
+        for root in roots[-2:]:
+            lines.extend(self._render_trace_span(root, children, indent=0))
         return lines
 
     def _journal_lines(self, run_id: str) -> list[str]:
@@ -334,6 +371,40 @@ class RunScreen(Screen[None]):
             return []
         raw_lines = [line.strip() for line in content.splitlines() if line.strip()]
         return [f"  [dim]{line[:120]}[/]" for line in raw_lines[:8]]
+
+    def _render_trace_span(
+        self,
+        span: TraceSpan,
+        children: dict[str, list[TraceSpan]],
+        *,
+        indent: int,
+    ) -> list[str]:
+        prefix = "  " + "  " * indent
+        duration = self._format_trace_duration(span.duration_ms)
+        summary = escape(span.summary[:80]) if span.summary else ""
+        line = (
+            f"{prefix}[bold]{span.kind}:{span.name}[/] "
+            f"[dim]{span.status} {duration}[/]"
+        )
+        if summary:
+            line += f" [dim]{summary}[/]"
+        lines = [line]
+        for child in children.get(span.span_id, []):
+            lines.extend(self._render_trace_span(child, children, indent=indent + 1))
+        return lines
+
+    def _format_trace_duration(self, duration_ms: int | None) -> str:
+        if duration_ms is None:
+            return "-"
+        if duration_ms >= 1000:
+            return f"{duration_ms / 1000:.1f}s"
+        return f"{duration_ms}ms"
+
+    def _format_trace_duration_str(self, duration_ms: str) -> str:
+        try:
+            return self._format_trace_duration(int(duration_ms))
+        except ValueError:
+            return duration_ms
 
     def _read_preview(self, path: Path) -> str:
         try:

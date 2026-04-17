@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from mini_cc.harness import CheckpointStore, RunHarness, RunState, RunStatus, Step, StepKind, StepStatus
 from mini_cc.harness.iteration import IterationOutcome, IterationReview, IterationScore
-from mini_cc.harness.models import format_local_time
+from mini_cc.harness.models import TraceSpan, format_local_time
 from mini_cc.tui.screens.run_screen import (
     _RUN_STATUS_COLORS,
     _RUN_STATUS_ICONS,
@@ -176,6 +176,46 @@ class TestRunScreenDataOps:
 
         assert any("## 基本信息" in line for line in lines)
 
+    def test_trace_lines_render_nested_spans(self, tmp_path):
+        store = CheckpointStore(base_dir=tmp_path)
+        run = _make_run_state()
+        store.save_state(run)
+        store.append_trace_span(
+            TraceSpan(
+                span_id="step-1",
+                run_id=run.run_id,
+                step_id="step-1",
+                kind="step",
+                name="edit_code",
+                status="success",
+                duration_ms=2100,
+                summary="edited files",
+            )
+        )
+        store.append_trace_span(
+            TraceSpan(
+                span_id="tool-1",
+                run_id=run.run_id,
+                step_id="step-1",
+                parent_span_id="step-1",
+                kind="tool",
+                name="file_write",
+                status="success",
+                duration_ms=120,
+                summary="wrote parser.py",
+            )
+        )
+
+        screen = RunScreen(store)
+
+        lines = screen._trace_lines(run.run_id)
+
+        assert len(lines) == 2
+        assert "step:edit_code" in lines[0]
+        assert "2.1s" in lines[0]
+        assert "tool:file_write" in lines[1]
+        assert "120ms" in lines[1]
+
     def test_show_detail_formats_times_in_local_timezone(self, tmp_path):
         store = CheckpointStore(base_dir=tmp_path)
         run = _make_run_state()
@@ -220,6 +260,90 @@ class TestRunScreenDataOps:
 
         assert any("invalidated_agents=1" in line for line in lines)
         assert any("decision=resume_replan" in line for line in lines)
+
+    def test_event_lines_include_trace_metadata(self, tmp_path):
+        from mini_cc.harness.events import HarnessEvent
+
+        store = CheckpointStore(base_dir=tmp_path)
+        run = _make_run_state()
+        store.save_state(run)
+        store.append_event(
+            HarnessEvent(
+                event_type="step_completed",
+                run_id=run.run_id,
+                step_id="step-2",
+                message="ok",
+                data={
+                    "decision": "continue",
+                    "trace_span_count": "3",
+                    "trace_tool_count": "2",
+                    "trace_agent_count": "1",
+                },
+            )
+        )
+
+        screen = RunScreen(store)
+
+        lines = screen._event_lines(run.run_id)
+
+        assert any("trace_spans=3" in line for line in lines)
+        assert any("tools=2" in line for line in lines)
+        assert any("agents=1" in line for line in lines)
+
+    def test_event_lines_include_trace_timing(self, tmp_path):
+        from mini_cc.harness.events import HarnessEvent
+
+        store = CheckpointStore(base_dir=tmp_path)
+        run = _make_run_state()
+        store.save_state(run)
+        store.append_event(
+            HarnessEvent(
+                event_type="step_completed",
+                run_id=run.run_id,
+                step_id="step-2",
+                message="ok",
+                data={
+                    "trace_elapsed_ms": "2450",
+                    "trace_first_event_ms": "120",
+                    "trace_first_token_ms": "340",
+                },
+            )
+        )
+
+        screen = RunScreen(store)
+
+        lines = screen._event_lines(run.run_id)
+
+        assert any("elapsed=2.5s" in line for line in lines)
+        assert any("first_event=120ms" in line for line in lines)
+        assert any("first_token=340ms" in line for line in lines)
+        assert all("diag_" not in line for line in lines)
+
+    def test_event_lines_include_scheduler_metadata(self, tmp_path):
+        from mini_cc.harness.events import HarnessEvent
+
+        store = CheckpointStore(base_dir=tmp_path)
+        run = _make_run_state()
+        store.save_state(run)
+        store.append_event(
+            HarnessEvent(
+                event_type="step_started",
+                run_id=run.run_id,
+                step_id="step-2",
+                message="Execute",
+                data={
+                    "scheduler_considered": "2",
+                    "scheduler_rejected": "step-ro",
+                },
+            )
+        )
+
+        screen = RunScreen(store)
+
+        lines = screen._event_lines(run.run_id)
+
+        assert any("considered=2" in line for line in lines)
+        assert any("rejected=step-ro" in line for line in lines)
 
     async def test_resume_run_calls_harness(self, tmp_path):
         store = CheckpointStore(base_dir=tmp_path)

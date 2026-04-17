@@ -33,6 +33,7 @@ class RunStatus(StrEnum):
     CREATED = "created"
     PLANNING = "planning"
     RUNNING = "running"
+    COOLDOWN = "cooldown"
     VERIFYING = "verifying"
     BLOCKED = "blocked"
     WAITING_HUMAN = "waiting_human"
@@ -65,11 +66,46 @@ class StepStatus(StrEnum):
     SKIPPED = "skipped"
 
 
+class WorkItemStatus(StrEnum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    SUCCEEDED = "succeeded"
+    FAILED_RETRYABLE = "failed_retryable"
+    FAILED_TERMINAL = "failed_terminal"
+    SKIPPED = "skipped"
+
+
 class RunHealth(StrEnum):
     PROGRESSING = "progressing"
     STALLED = "stalled"
     BLOCKED = "blocked"
     REGRESSING = "regressing"
+
+
+class FailureClass(StrEnum):
+    TRANSIENT_PROVIDER = "transient_provider"
+    TRANSIENT_ENV = "transient_env"
+    TOOL_FAILURE = "tool_failure"
+    LOGIC_FAILURE = "logic_failure"
+    TIME_BUDGET_EXCEEDED = "time_budget_exceeded"
+    CANCELLED = "cancelled"
+    HUMAN_BLOCKED = "human_blocked"
+
+
+class TraceSpan(BaseModel):
+    span_id: str
+    run_id: str
+    step_id: str | None = None
+    work_item_id: str | None = None
+    parent_span_id: str | None = None
+    kind: str
+    name: str
+    status: str
+    start_at: str | None = None
+    end_at: str | None = None
+    duration_ms: int | None = None
+    summary: str = ""
+    metadata: dict[str, str] = Field(default_factory=dict)
 
 
 class AgentTrace(BaseModel):
@@ -111,6 +147,23 @@ class RetryPolicy(BaseModel):
     max_replan_count: int = 3
 
 
+class WorkItem(BaseModel):
+    id: str = ""
+    kind: str
+    title: str
+    goal: str
+    role: str
+    inputs: StepInputs = Field(default_factory=dict)
+    status: WorkItemStatus = WorkItemStatus.PENDING
+    retry_count: int = 0
+    budget_seconds: int | None = None
+    depends_on: list[str] = Field(default_factory=list)
+    artifacts: dict[str, str] = Field(default_factory=dict)
+    summary: str = ""
+    error: str | None = None
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+
 class Step(BaseModel):
     id: str = ""
     kind: StepKind
@@ -126,6 +179,35 @@ class Step(BaseModel):
     evaluation: str = ""
     summary: str = ""
     error: str | None = None
+    work_items: list[WorkItem] = Field(default_factory=list)
+
+    @property
+    def has_work_items(self) -> bool:
+        return bool(self.work_items)
+
+    def ready_work_items(self) -> list[WorkItem]:
+        completed = {item.id for item in self.work_items if item.status == WorkItemStatus.SUCCEEDED}
+        return [
+            item
+            for item in self.work_items
+            if item.status == WorkItemStatus.PENDING and all(dep in completed for dep in item.depends_on)
+        ]
+
+    def pending_work_items(self) -> list[WorkItem]:
+        return [item for item in self.work_items if item.status == WorkItemStatus.PENDING]
+
+    def sync_work_item(self, updated_item: WorkItem) -> None:
+        for index, item in enumerate(self.work_items):
+            if item.id == updated_item.id:
+                self.work_items[index] = updated_item
+                return
+        self.work_items.append(updated_item)
+
+    def all_work_items_succeeded(self) -> bool:
+        return bool(self.work_items) and all(item.status == WorkItemStatus.SUCCEEDED for item in self.work_items)
+
+    def has_terminal_work_item_failure(self) -> bool:
+        return any(item.status == WorkItemStatus.FAILED_TERMINAL for item in self.work_items)
 
 
 class StepResult(BaseModel):
@@ -138,6 +220,8 @@ class StepResult(BaseModel):
     timed_out: bool = False
     progress_made: bool = False
     query_state: QueryState | None = None
+    failure_class: FailureClass | None = None
+    trace_spans: list[TraceSpan] = Field(default_factory=list)
     metadata: dict[str, str] = Field(default_factory=dict)
 
 
@@ -149,11 +233,14 @@ class RunState(BaseModel):
     created_at: str = Field(default_factory=utc_now_iso)
     started_at: str | None = None
     deadline_at: str | None = None
+    cooldown_until: str | None = None
+    cooldown_reason: str | None = None
     updated_at: str = Field(default_factory=utc_now_iso)
     budget: RunBudget = Field(default_factory=RunBudget)
     retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)
     steps: list[Step] = Field(default_factory=list)
     current_step_id: str | None = None
+    current_work_item_id: str | None = None
     completed_step_ids: list[str] = Field(default_factory=list)
     failed_step_ids: list[str] = Field(default_factory=list)
     artifacts: dict[str, str] = Field(default_factory=dict)
@@ -166,6 +253,7 @@ class RunState(BaseModel):
     spawned_agents: list[AgentTrace] = Field(default_factory=list)
     agent_budget: AgentBudget | None = None
     replan_count: int = 0
+    provider_cooldown_count: int = 0
     metadata: dict[str, str] = Field(default_factory=dict)
 
     @property
@@ -204,7 +292,8 @@ class RunState(BaseModel):
         return [
             step
             for step in self.steps
-            if step.status == StepStatus.PENDING and all(dep in completed for dep in step.depends_on)
+            if step.status in {StepStatus.PENDING, StepStatus.IN_PROGRESS}
+            and all(dep in completed for dep in step.depends_on)
         ]
 
     def pending_steps(self) -> list[Step]:

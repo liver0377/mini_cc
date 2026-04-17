@@ -5,7 +5,7 @@ from datetime import datetime
 from mini_cc.harness.checkpoint import CheckpointStore
 from mini_cc.harness.events import HarnessEvent
 from mini_cc.harness.iteration import IterationOutcome, IterationReview, IterationSnapshot
-from mini_cc.harness.models import RunState, StepKind, StepStatus, format_local_time
+from mini_cc.harness.models import RunState, StepKind, StepStatus, TraceSpan, format_local_time
 from mini_cc.harness.task_audit import TaskAuditRegistry
 
 
@@ -17,11 +17,14 @@ class RunDocGenerator:
         events = store.load_events(run_state.run_id)
         snapshots = store.load_iteration_snapshots(run_state.run_id)
         reviews = store.load_iteration_reviews(run_state.run_id)
+        trace_spans = store.load_trace_spans(run_state.run_id)
         review_map = {review.step_id: review for review in reviews}
 
         sections = [
             self._render_basic_info(run_state, events),
             self._render_step_timeline(run_state, review_map),
+            self._render_trace_summary(trace_spans),
+            self._render_timing_summary(events),
             self._render_score_trend(reviews),
             self._render_agent_summary(run_state),
             self._render_resource_usage(run_state),
@@ -74,6 +77,27 @@ class RunDocGenerator:
             )
         return "\n".join(lines)
 
+    def _render_trace_summary(self, spans: list[TraceSpan]) -> str:
+        lines = [
+            "## 执行 Trace 摘要",
+            "",
+            "| 指标 | 值 |",
+            "|------|------|",
+            f"| Span 总数 | {len(spans)} |",
+            f"| Step / WorkItem | {self._count_kind(spans, 'step')} / {self._count_kind(spans, 'work_item')} |",
+            f"| Agent / Tool | {self._count_kind(spans, 'agent')} / {self._count_kind(spans, 'tool')} |",
+        ]
+        if not spans:
+            lines.extend(["", "暂无结构化 trace。"])
+            return "\n".join(lines)
+
+        roots = [span for span in spans if span.parent_span_id is None]
+        children_map = self._children_map(spans)
+        lines.extend(["", "### 最近执行链路", ""])
+        for root in roots[-3:]:
+            lines.extend(self._trace_lines(root, children_map, indent=0))
+        return "\n".join(lines)
+
     def _render_score_trend(self, reviews: list[IterationReview]) -> str:
         lines = [
             "## 迭代评分趋势",
@@ -88,6 +112,28 @@ class RunDocGenerator:
         for review in reviews:
             root_cause = review.root_cause.replace("\n", " ")
             lines.append(f"| {review.step_id} | {review.score.total} | {review.outcome.value} | {root_cause[:80]} |")
+        return "\n".join(lines)
+
+    def _render_timing_summary(self, events: list[HarnessEvent]) -> str:
+        lines = [
+            "## 执行时序",
+            "",
+            "| Step | 总耗时 | 首事件 | 首 Token | LLM 回合 | Tool 回合 |",
+            "|------|--------|--------|-----------|----------|-----------|",
+        ]
+        timed_events = [event for event in events if event.event_type == "step_completed"]
+        if not timed_events:
+            lines.append("| - | - | - | - | - | - |")
+            return "\n".join(lines)
+        for event in timed_events[-8:]:
+            elapsed = self._fmt_ms_value(event.data.get("trace_elapsed_ms"))
+            first_event = self._fmt_ms_value(event.data.get("trace_first_event_ms"))
+            first_token = self._fmt_ms_value(event.data.get("trace_first_token_ms"))
+            llm_turns = self._fmt_turn_series(event.data.get("trace_turn_llm_ms"))
+            tool_turns = self._fmt_turn_series(event.data.get("trace_turn_tool_ms"))
+            lines.append(
+                f"| {event.step_id or '-'} | {elapsed} | {first_event} | {first_token} | {llm_turns} | {tool_turns} |"
+            )
         return "\n".join(lines)
 
     def _render_agent_summary(self, run_state: RunState) -> str:
@@ -180,8 +226,8 @@ class RunDocGenerator:
         lines = [
             "## 关键决策记录",
             "",
-            "| Step | 决策 | 原因 | Active Agents | 自动插入 |",
-            "|------|------|------|---------------|----------|",
+            "| Step | 决策 | 原因 | Active Agents | Trace | 自动插入 |",
+            "|------|------|------|---------------|-------|----------|",
         ]
         decision_events = [
             event
@@ -189,15 +235,17 @@ class RunDocGenerator:
             if event.event_type in {"run_failed", "run_timed_out", "step_completed", "run_completed", "run_resumed"}
         ]
         if not decision_events:
-            lines.append("| - | - | - | - | - |")
+            lines.append("| - | - | - | - | - | - |")
             return "\n".join(lines)
         for event in decision_events[-12:]:
             decision = event.data.get("decision", event.event_type)
             reason = event.data.get("decision_reason", event.message).replace("\n", " ")
             active_agents = event.data.get("active_agents", "-")
+            trace = self._decision_trace_summary(event)
             inserted = event.data.get("inserted_steps", "-") or "-"
             lines.append(
-                f"| {event.step_id or event.event_type} | {decision} | {reason[:60]} | {active_agents} | {inserted} |"
+                f"| {event.step_id or event.event_type} | {decision} | {reason[:60]} | "
+                f"{active_agents} | {trace[:80]} | {inserted} |"
             )
         return "\n".join(lines)
 
@@ -318,3 +366,63 @@ class RunDocGenerator:
         if minutes > 0:
             return f"{minutes}m {remaining}s"
         return f"{remaining}s"
+
+    def _count_kind(self, spans: list[TraceSpan], kind: str) -> int:
+        return sum(1 for span in spans if span.kind == kind)
+
+    def _children_map(self, spans: list[TraceSpan]) -> dict[str, list[TraceSpan]]:
+        children: dict[str, list[TraceSpan]] = {}
+        for span in spans:
+            if span.parent_span_id is None:
+                continue
+            children.setdefault(span.parent_span_id, []).append(span)
+        return children
+
+    def _trace_lines(
+        self,
+        span: TraceSpan,
+        children_map: dict[str, list[TraceSpan]],
+        *,
+        indent: int,
+    ) -> list[str]:
+        prefix = "  " * indent + "- "
+        duration = self._format_span_duration(span.duration_ms)
+        summary = f" {span.summary[:60]}" if span.summary else ""
+        lines = [f"{prefix}`{span.kind}:{span.name}` [{span.status}] ({duration}){summary}"]
+        for child in children_map.get(span.span_id, []):
+            lines.extend(self._trace_lines(child, children_map, indent=indent + 1))
+        return lines
+
+    def _format_span_duration(self, duration_ms: int | None) -> str:
+        if duration_ms is None:
+            return "-"
+        if duration_ms >= 1000:
+            return f"{duration_ms / 1000:.1f}s"
+        return f"{duration_ms}ms"
+
+    def _decision_trace_summary(self, event: HarnessEvent) -> str:
+        if "trace_outline" in event.data:
+            return event.data["trace_outline"]
+        span_count = event.data.get("trace_span_count")
+        if span_count is None:
+            return "-"
+        tool_count = event.data.get("trace_tool_count", "0")
+        agent_count = event.data.get("trace_agent_count", "0")
+        return f"spans={span_count}, tools={tool_count}, agents={agent_count}"
+
+    def _fmt_ms_value(self, value: str | None) -> str:
+        if value is None or not value.strip():
+            return "-"
+        try:
+            duration_ms = int(value)
+        except ValueError:
+            return value
+        return self._format_span_duration(duration_ms)
+
+    def _fmt_turn_series(self, value: str | None) -> str:
+        if value is None or not value.strip():
+            return "-"
+        parts = [item for item in value.split(",") if item.strip()]
+        if not parts:
+            return "-"
+        return ", ".join(self._fmt_ms_value(item) for item in parts[:3])
