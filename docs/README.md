@@ -1,71 +1,47 @@
-# Mini Claude Code 设计文档
+# Mini Claude Code 项目文档
 
-本目录包含 Mini Claude Code 各子系统的设计文档，所有文档使用中文编写。
+> Mini Claude Code（`mini_cc`）是一个轻量级多智能体协作编程助手 CLI，采用纯 Python 构建，通过异步 Agent Loop 流式处理 LLM 响应，执行工具调用，并经由 Textual TUI 或 prompt_toolkit REPL 渲染结果。
 
-## 文档索引
+## 文档导航
 
-| 模块 | 文档 | 说明 |
-|------|------|------|
-| **Agent Loop** | [agent-loop/README.md](./agent-loop/README.md) | 核心交互循环与流式事件机制 |
-| | [agent-loop/query-engine.md](./agent-loop/query-engine.md) | QueryEngine 编排器、状态模型、事件类型、依赖注入 |
-| **Multi-Agent** | [multi-agent/README.md](./multi-agent/README.md) | 主从多 Agent 架构总览（写 Agent / 只读 Agent / Fork） |
-| | [multi-agent/agent.md](./multi-agent/agent.md) | Agent 抽象（AgentId / AgentConfig / SubAgent）、生命周期、AgentTool、AgentManager |
-| | [multi-agent/infrastructure.md](./multi-agent/infrastructure.md) | 隔离策略（worktree + 快照）、消息同步、结果反馈循环、output 持久化 |
-| | [multi-agent/task.md](./multi-agent/task.md) | 统一 Task 系统（类型、依赖、生命周期、TaskService） |
-| **Context** | [context/README.md](./context/README.md) | 系统提示词组装（静态模板 + 动态环境信息 + AGENTS.md + 记忆索引） |
-| **Tools** | [tools/README.md](./tools/README.md) | 工具设计（文件 / Bash / 搜索 / Agent）、并发执行模型、工具注册表 |
-| **TUI** | [tui/README.md](./tui/README.md) | Textual TUI 架构（屏幕、组件、斜杠命令、补全、Agent 管理面板） |
-| **Memory** | [memory/design.md](./memory/design.md) | 中期记忆系统（跨会话持久化、四类分类、自动提取） |
-| **Compression** | [compression/design.md](./compression/design.md) | 上下文压缩（自动压缩 / 反应式压缩 / 手动 `/compact`、tiktoken 计数） |
-| **Harness** | [harness/design.md](./harness/design.md) | 长时运行 Harness（Run 生命周期、Supervisor、Step、Checkpoint、Policy） |
-| | [harness/orchestrator-refactor.md](./harness/orchestrator-refactor.md) | Harness 多 Agent 编排重构方案（Orchestrator / Dispatcher / WorkItem / 失败分型 / 落地清单） |
-| | [harness/task-specific-audit.md](./harness/task-specific-audit.md) | 任务专项审计（profile、专项 artifact、专项 judge、任务完成度文档化） |
-| **Architecture** | [architecture/final-layout.md](./architecture/final-layout.md) | 最终目录架构与无兼容层重构方案（目标分层、删除清单、迁移顺序、完成判定） |
-| | [architecture/refactor-roadmap.md](./architecture/refactor-roadmap.md) | 当前项目的架构重构路线图（问题收敛、阶段拆分、执行顺序、完成定义） |
-| **Iteration** | [iteration/design.md](./iteration/design.md) | 迭代优化系统（每轮复盘、评分、约束注入、下一轮改进） |
-| | [iteration/runtime.md](./iteration/runtime.md) | 运行期迭代记录（journal、snapshot、review 持久化格式与自动调试行为） |
-| **Security** | [security/README.md](./security/README.md) | 安全设计（Sandbox 限制、Plan/Build 模式） |
+### 架构设计
 
-## 架构概览
+| 文档 | 说明 |
+|------|------|
+| [架构总览](architecture/overview.md) | 系统整体架构、分层设计、模块依赖关系图 |
+| [数据流与事件系统](architecture/data-flow.md) | 事件驱动架构、Agent Loop 数据流、事件状态机 |
 
-```
-用户输入 ──→ REPL / TUI ──→ QueryEngine
-                                  │
-                   ┌──────────────┼──────────────┐
-                   │              │              │
-                   ▼              ▼              ▼
-             Context 模块    Provider 模块   ToolExecutor
-             (提示词组装)    (LLM 流式调用)   (工具执行调度)
-                                                  │
-                                          ┌───────┴───────┐
-                                          │               │
-                                          ▼               ▼
-                                    安全工具(并发)    危险工具(串行)
-                                    file_read         file_edit
-                                    glob              file_write
-                                    grep              bash
-                                                      agent
-                                                          │
-                                                  ┌───────┴───────┐
-                                                  │               │
-                                                  ▼               ▼
-                                            写 Agent          只读 Agent
-                                            (同步阻塞)        (异步后台)
-                                            直写主工作区       worktree 隔离
-                                            快照备份           结果队列通知
+### 模块设计
 
-         ┌────────────────────────────────────────────────────────────┐
-         │                     横切关注点                               │
-         │  Compression (上下文压缩)  │  Memory (跨会话记忆)            │
-         │  Task (统一任务追踪)       │  Security (Plan/Build 模式)     │
-         └────────────────────────────────────────────────────────────┘
-```
+| 文档 | 说明 |
+|------|------|
+| [应用层 (app)](modules/app.md) | CLI 入口、REPL 交互循环、Textual TUI 界面 |
+| [运行时核心 (runtime)](modules/runtime.md) | QueryEngine Agent Loop、工具执行器、运行时门面 |
+| [多智能体系统 (agents)](modules/agents.md) | Agent 管理器、子智能体调度、生命周期总线、快照回滚 |
+| [上下文组装 (context)](modules/context.md) | 系统提示词构建、工具使用上下文、引擎上下文 |
+| [LLM 提供者 (providers)](modules/providers.md) | 提供者协议、OpenAI 流式实现 |
+| [数据模型 (models)](modules/models.md) | 消息、事件、查询状态、任务、智能体模型 |
+| [工具系统 (tools)](modules/tools.md) | 工具注册表、执行策略、各工具实现 |
+| [任务队列 (task)](modules/task.md) | 持久化任务服务、状态机、依赖追踪 |
+| [自主运行线束 (harness)](modules/harness.md) | Run Harness 自动化执行框架、调度、裁判、监督循环 |
+| [横切特性 (features)](modules/features.md) | 长期记忆、上下文压缩 |
 
-## 系统提示词构成
+## 项目源码结构
 
 ```
-1. 静态 prompt（intro.md, rules.md, caution.md, tool_guide.md）
-2. 环境信息（<env> 工作目录、git 状态、平台、模型 </env>）
-3. AGENTS.md（用户手动维护的项目指令）
-4. MEMORY.md 索引（中期记忆，跨会话级，≤ 200 行）
+src/mini_cc/
+├── __init__.py              # 包版本
+├── __main__.py              # 入口点
+├── app/                     # 应用层：CLI、REPL、TUI
+├── context/                 # 系统提示词组装 + 工具使用上下文
+├── features/                # 横切特性：记忆、压缩
+├── harness/                 # 自主运行线束
+├── models/                  # 共享数据模型
+├── providers/               # LLM 提供者协议与实现
+├── runtime/                 # 运行时核心
+│   ├── agents/              #   多智能体管理
+│   ├── execution/           #   工具执行引擎
+│   └── query/               #   Agent Loop 引擎
+├── task/                    # 任务队列服务
+└── tools/                   # 工具实现
 ```
