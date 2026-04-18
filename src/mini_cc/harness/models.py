@@ -125,6 +125,7 @@ class SchedulerDecisionRecord(BaseModel):
 class AgentTrace(BaseModel):
     agent_id: str
     source_step_id: str | None = None
+    work_item_id: str | None = None
     readonly: bool = False
     scope_paths: list[str] = Field(default_factory=list)
     created_at: str = Field(default_factory=utc_now_iso)
@@ -144,7 +145,7 @@ class RunBudget(BaseModel):
     max_step_seconds: int = 300
     max_test_runs: int = 20
     max_bash_commands: int = 50
-    max_active_agents: int = 2
+    max_active_agents: int = 10
 
 
 class RetryPolicy(BaseModel):

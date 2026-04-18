@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mini-cc = "mini_cc.cli:app"
+mini-cc = "mini_cc.app.cli:app"
 
 [tool.commitizen]
 name = "cz_conventional_commits"

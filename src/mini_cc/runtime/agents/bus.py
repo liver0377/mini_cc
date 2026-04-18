@@ -9,6 +9,7 @@ class AgentLifecycleEvent:
     event_type: str
     agent_id: str
     source_step_id: str | None = None
+    work_item_id: str | None = None
     readonly: bool = False
     scope_paths: list[str] | None = None
     success: bool | None = None

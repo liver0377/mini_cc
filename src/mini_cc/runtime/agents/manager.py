@@ -162,6 +162,7 @@ class AgentManager:
                     event_type="created",
                     agent_id=agent_id,
                     source_step_id=step_id or self._current_step_id,
+                    work_item_id=work_item_id,
                     readonly=readonly,
                     scope_paths=normalized_scopes,
                 )

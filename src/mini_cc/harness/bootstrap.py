@@ -175,6 +175,22 @@ def _should_ignore_entry(path: Path) -> bool:
 
 def _bootstrap_work_items(user_text: str, bootstrap_prompt: str, profile: TaskAuditProfile | None) -> list[WorkItem]:
     bootstrap_hint = profile.bootstrap_guidance if profile is not None else ""
+    generate_prompt = (
+        "基于前置分析结果，直接生成项目骨架的完整实现方案。"
+        "不要重复已有分析，直接产出具体的文件内容、目录结构和实现计划。\n\n"
+        f"用户目标：{user_text}\n"
+        f"{bootstrap_hint}"
+    )
+    write_prompt = (
+        "基于前置生成的骨架方案，将所有文件写入磁盘。"
+        "确保入口可执行、测试可运行、依赖正确安装。\n\n"
+        f"用户目标：{user_text}"
+    )
+    verify_prompt = (
+        "复核 bootstrap 结果：验证目录结构完整、入口可执行、测试可运行。"
+        "指出剩余风险和后续实现重点。\n\n"
+        f"用户目标：{user_text}"
+    )
     return [
         WorkItem(
             id="bootstrap.inspect_repo",
@@ -206,7 +222,7 @@ def _bootstrap_work_items(user_text: str, bootstrap_prompt: str, profile: TaskAu
             ),
             role="implementer",
             depends_on=["bootstrap.detect_scaffold"],
-            inputs={"prompt": bootstrap_prompt},
+            inputs={"prompt": generate_prompt},
         ),
         WorkItem(
             id="bootstrap.write_skeleton",
@@ -215,7 +231,7 @@ def _bootstrap_work_items(user_text: str, bootstrap_prompt: str, profile: TaskAu
             goal="将项目骨架落盘，并确保目录结构、测试和入口文件可运行。",
             role="implementer",
             depends_on=["bootstrap.generate_skeleton"],
-            inputs={"prompt": bootstrap_prompt},
+            inputs={"prompt": write_prompt},
         ),
         WorkItem(
             id="bootstrap.verify_bootstrap",
@@ -224,12 +240,17 @@ def _bootstrap_work_items(user_text: str, bootstrap_prompt: str, profile: TaskAu
             goal="复核 bootstrap 结果，确认骨架已满足后续 analyze/edit 的最小前提，并指出剩余风险。",
             role="reporter",
             depends_on=["bootstrap.write_skeleton"],
-            inputs={"prompt": bootstrap_prompt},
+            inputs={"prompt": verify_prompt},
         ),
     ]
 
 
 def _edit_work_items(user_text: str) -> list[WorkItem]:
+    apply_prompt = f"基于前置定位结果，在最小必要范围内完成实现或修复，并保持变更可验证。\n\n目标：{user_text}"
+    check_prompt = f"检查本轮修改是否覆盖目标、是否存在明显遗漏，以及后续验证应重点关注什么。\n\n目标：{user_text}"
+    summary_prompt = (
+        f"总结本轮修改、影响范围和待验证项，为后续 run_tests / finalize 提供清晰上下文。\n\n目标：{user_text}"
+    )
     return [
         WorkItem(
             id="edit.select_target_slice",
@@ -246,7 +267,7 @@ def _edit_work_items(user_text: str) -> list[WorkItem]:
             goal=f"在最小必要范围内完成实现或修复，并保持变更可验证。目标：{user_text}",
             role="implementer",
             depends_on=["edit.select_target_slice"],
-            inputs={"prompt": user_text},
+            inputs={"prompt": apply_prompt},
         ),
         WorkItem(
             id="edit.self_check",
@@ -255,7 +276,7 @@ def _edit_work_items(user_text: str) -> list[WorkItem]:
             goal="检查本轮修改是否覆盖目标、是否存在明显遗漏，以及后续验证应重点关注什么。",
             role="reporter",
             depends_on=["edit.apply_patch_slice"],
-            inputs={"prompt": user_text},
+            inputs={"prompt": check_prompt},
         ),
         WorkItem(
             id="edit.emit_change_summary",
@@ -264,6 +285,6 @@ def _edit_work_items(user_text: str) -> list[WorkItem]:
             goal="总结本轮修改、影响范围和待验证项，为后续 run_tests / finalize 提供清晰上下文。",
             role="reporter",
             depends_on=["edit.self_check"],
-            inputs={"prompt": user_text},
+            inputs={"prompt": summary_prompt},
         ),
     ]

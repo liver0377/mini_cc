@@ -29,7 +29,7 @@ from mini_cc.harness.models import (
     utc_now_iso,
 )
 from mini_cc.harness.policy import PolicyAction, PolicyDecision, PolicyEngine
-from mini_cc.harness.scheduler import Scheduler
+from mini_cc.harness.scheduler import BatchSchedulingDecision, Scheduler
 from mini_cc.harness.step_runner import StepRunner
 
 HarnessEventSink = Callable[[HarnessEvent, RunState], Awaitable[None] | None]
@@ -104,11 +104,21 @@ class SupervisorLoop:
                 run_state.cooldown_until = None
                 run_state.cooldown_reason = None
             self._drain_and_update_agents(run_state)
+            self._drain_completed_background_work_items(run_state)
             await asyncio.sleep(0)
             limit_decision = self._policy.check_run_limits(run_state)
             if limit_decision is not None:
                 self._apply_terminal_decision(run_state, limit_decision)
                 break
+
+            batch_decision = self._scheduler.decide_readonly_batch(run_state)
+            if (
+                batch_decision is not None
+                and batch_decision.candidates
+                and hasattr(self._step_runner, "start_readonly_work_item_background")
+            ):
+                await self._dispatch_readonly_batch(run_state, batch_decision, interrupt_event)
+                continue
 
             scheduling_decision = self._scheduler.decide(run_state)
             if scheduling_decision is None:
@@ -238,6 +248,192 @@ class SupervisorLoop:
         run_state.current_work_item_id = None
         run_state.touch()
         self._store.save_state(run_state)
+
+    async def _dispatch_readonly_batch(
+        self,
+        run_state: RunState,
+        batch_decision: BatchSchedulingDecision,
+        interrupt_event: threading.Event | None,
+    ) -> None:
+        sync_results: list[tuple[Step, WorkItem, StepResult, str]] = []
+        for candidate in batch_decision.candidates:
+            step = candidate.step
+            work_item = candidate.work_item
+            if work_item is None:
+                continue
+            step.status = StepStatus.IN_PROGRESS
+            work_item.status = WorkItemStatus.IN_PROGRESS
+            step.sync_work_item(work_item)
+            run_state.sync_step(step)
+            run_state.phase = work_item.kind
+            execution_started_at = utc_now_iso()
+
+            self._set_step_context(step)
+            self._step_runner.set_interrupt_event(interrupt_event)
+            try:
+                result = await self._step_runner.start_readonly_work_item_background(step, work_item, run_state)
+            except Exception as err:
+                result = StepResult(
+                    success=False,
+                    summary="",
+                    retryable=True,
+                    error=f"Background dispatch failed: {err}",
+                    progress_made=False,
+                )
+            finally:
+                self._step_runner.set_interrupt_event(None)
+                self._clear_step_context()
+
+            if not result.success:
+                work_item.status = WorkItemStatus.PENDING
+                step.sync_work_item(work_item)
+                run_state.sync_step(step)
+                continue
+
+            self._store.append_scheduler_decision(
+                SchedulerDecisionRecord(
+                    run_id=run_state.run_id,
+                    step_id=step.id,
+                    work_item_id=work_item.id,
+                    selected_role=candidate.role,
+                    selected_priority=candidate.priority,
+                    considered_count=batch_decision.considered_count,
+                    reason=f"batch dispatch: {batch_decision.reason}",
+                    rejected_targets=[],
+                    rejected_reasons=[],
+                )
+            )
+            is_sync = result.metadata.get("dispatch_mode") == "sync_fallback"
+
+            if is_sync:
+                sync_results.append((step, work_item, result, execution_started_at))
+            else:
+                work_item.summary = result.summary
+                work_item.metadata.update(result.metadata)
+                step.sync_work_item(work_item)
+                await self._emit_event(
+                    HarnessEvent(
+                        event_type="step_started",
+                        run_id=run_state.run_id,
+                        step_id=step.id,
+                        message=work_item.title,
+                        data={
+                            "kind": step.kind.value,
+                            "work_item_id": work_item.id,
+                            "work_item_kind": work_item.kind,
+                            "active_agents": str(run_state.active_agent_count),
+                            "failure_count": str(run_state.failure_count),
+                            "no_progress_count": str(run_state.consecutive_no_progress_count),
+                            "replan_count": str(run_state.replan_count),
+                            "scheduler_reason": f"batch: {batch_decision.reason}",
+                            "scheduler_considered": str(batch_decision.considered_count),
+                            "scheduler_rejected": "",
+                        },
+                    ),
+                    run_state,
+                )
+                self._append_trace_spans(
+                    run_state,
+                    result.trace_spans,
+                    self._execution_span(
+                        run_state=run_state,
+                        step=step,
+                        work_item=work_item,
+                        started_at=execution_started_at,
+                        status="started",
+                        summary=result.summary,
+                    ),
+                )
+
+        run_state.current_step_id = None
+        run_state.current_work_item_id = None
+
+        for step, work_item, result, execution_started_at in sync_results:
+            await self._apply_step_result(run_state, step, work_item, result, execution_started_at)
+
+        if run_state.status not in {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.BLOCKED, RunStatus.TIMED_OUT}:
+            run_state.status = RunStatus.RUNNING
+        run_state.touch()
+        self._store.save_state(run_state)
+
+    def _drain_completed_background_work_items(self, run_state: RunState) -> None:
+        completed_traces: list[AgentTrace] = []
+        for trace in run_state.spawned_agents:
+            if trace.completed_at is None:
+                continue
+            if not trace.readonly:
+                continue
+            if not trace.work_item_id:
+                continue
+            completed_traces.append(trace)
+
+        if not completed_traces:
+            return
+
+        for trace in completed_traces:
+            assert trace.work_item_id is not None
+            step, work_item = self._find_work_item(run_state, trace.work_item_id)
+            if step is None or work_item is None:
+                continue
+            if work_item.status != WorkItemStatus.IN_PROGRESS:
+                continue
+
+            output = self._read_agent_output(trace)
+            work_item.summary = output or trace.output_preview
+            work_item.error = None if trace.success else (trace.termination_reason or "background agent failed")
+            work_item.status = WorkItemStatus.SUCCEEDED if trace.success else WorkItemStatus.FAILED_TERMINAL
+            work_item.metadata["background_agent_id"] = trace.agent_id
+            if trace.output_path:
+                work_item.artifacts["agent_output"] = trace.output_path
+            step.sync_work_item(work_item)
+            step.summary = self._summarize_step_work_items(step)
+            run_state.sync_step(step)
+            run_state.latest_summary = work_item.summary
+            self._update_failure_tracking(
+                run_state,
+                StepResult(success=bool(trace.success), summary=work_item.summary, progress_made=bool(output)),
+            )
+
+            if step.has_work_items and not step.pending_work_items():
+                self._finalize_step_if_all_work_items_done(run_state, step)
+
+        run_state.touch()
+        self._store.save_state(run_state)
+
+    def _find_work_item(self, run_state: RunState, work_item_id: str) -> tuple[Step | None, WorkItem | None]:
+        for step in run_state.steps:
+            for work_item in step.work_items:
+                if work_item.id == work_item_id:
+                    return step, work_item
+        return None, None
+
+    def _read_agent_output(self, trace: AgentTrace) -> str:
+        if not trace.output_path:
+            return ""
+        try:
+            from pathlib import Path
+
+            content = Path(trace.output_path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return ""
+        separator = "---\n"
+        idx = content.find(separator)
+        if idx >= 0:
+            return content[idx + len(separator) :]
+        return content
+
+    def _finalize_step_if_all_work_items_done(self, run_state: RunState, step: Step) -> None:
+        if step.all_work_items_succeeded():
+            step.status = StepStatus.SUCCEEDED
+            if step.id not in run_state.completed_step_ids:
+                run_state.completed_step_ids.append(step.id)
+        elif step.has_terminal_work_item_failure():
+            step.status = StepStatus.FAILED_TERMINAL
+            if step.id not in run_state.failed_step_ids:
+                run_state.failed_step_ids.append(step.id)
+        else:
+            return
+        run_state.sync_step(step)
 
     async def _apply_step_result(
         self,
@@ -686,6 +882,7 @@ class SupervisorLoop:
                 trace = AgentTrace(
                     agent_id=event.agent_id,
                     source_step_id=event.source_step_id,
+                    work_item_id=getattr(event, "work_item_id", None),
                     readonly=event.readonly,
                     scope_paths=event.scope_paths or [],
                 )

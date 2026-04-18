@@ -73,6 +73,72 @@ class StepRunner:
             except TimeoutError:
                 return self._build_timeout_result(timeout_seconds)
 
+    async def start_readonly_work_item_background(
+        self, step: Step, work_item: WorkItem, run_state: RunState
+    ) -> StepResult:
+        if self._runtime is None or not self._runtime.has_agent_runtime:
+            result = await self.run_work_item(step, work_item, run_state)
+            result.metadata["dispatch_mode"] = "sync_fallback"
+            return result
+
+        base_prompt = str(work_item.inputs.get("prompt", work_item.goal))
+        prior_context = self._build_prior_work_item_context(step, work_item)
+        prompt = (prior_context + base_prompt) if prior_context else base_prompt
+
+        self._inject_agent_budget(run_state)
+        scope = self._work_item_scope_or_null(step, work_item, run_state)
+        with scope:
+            try:
+                background = await self._runtime.start_background_agent(
+                    prompt=prompt,
+                    readonly=True,
+                    fork=False,
+                    parent_state=run_state.latest_query_state,
+                    mode="plan",
+                    scope_paths=[],
+                    run_id=run_state.run_id,
+                    step_id=step.id,
+                    work_item_id=work_item.id,
+                    role=work_item.role,
+                )
+            except Exception as err:
+                return StepResult(
+                    success=False,
+                    summary="",
+                    retryable=True,
+                    error=str(err),
+                    failure_class=self._classify_exception(err),
+                )
+        self._background_tasks.add(background.task)
+        background.task.add_done_callback(self._background_tasks.discard)
+        metadata: dict[str, str] = {
+            "agent_id": background.agent_id,
+            "work_item_id": work_item.id,
+            "work_item_kind": work_item.kind,
+            "dispatch_mode": "background",
+        }
+        metadata.update(self._read_back_budget_metadata())
+        return StepResult(
+            success=True,
+            summary=f"Readonly agent {background.agent_id} started for work item {work_item.id}",
+            progress_made=True,
+            trace_spans=[
+                TraceSpan(
+                    span_id=f"{step.id}-{work_item.id}-bg",
+                    run_id=run_state.run_id,
+                    step_id=step.id,
+                    work_item_id=work_item.id,
+                    kind="work_item",
+                    name=work_item.kind,
+                    status="started",
+                    end_at=datetime.now(UTC).isoformat(),
+                    summary=f"Background agent {background.agent_id}",
+                    metadata={"mode": "plan", "readonly": "true", "dispatch_mode": "background"},
+                )
+            ],
+            metadata=metadata,
+        )
+
     def _build_timeout_result(self, timeout_seconds: int) -> StepResult:
         diag = self._diag
         error = diag.summarize_timeout(timeout_seconds) if diag else f"Step timed out after {timeout_seconds}s"
@@ -126,7 +192,9 @@ class StepRunner:
         readonly = work_item.role in {"analyzer", "planner", "reporter", "verifier"}
         mode = "plan" if readonly else "build"
         parent_state = run_state.latest_query_state if readonly else None
-        prompt = str(work_item.inputs.get("prompt", work_item.goal))
+        base_prompt = str(work_item.inputs.get("prompt", work_item.goal))
+        prior_context = self._build_prior_work_item_context(step, work_item)
+        prompt = (prior_context + base_prompt) if prior_context else base_prompt
 
         if self._runtime is None:
             return StepResult(
@@ -533,6 +601,23 @@ class StepRunner:
                 work_item_id=work_item_id,
             ),
             metadata=metadata,
+        )
+
+    def _build_prior_work_item_context(self, step: Step, work_item: WorkItem) -> str:
+        if not work_item.depends_on:
+            return ""
+        dep_parts: list[str] = []
+        for dep_id in work_item.depends_on:
+            for item in step.work_items:
+                if item.id == dep_id and item.summary:
+                    dep_parts.append(f"### 前置任务「{item.title}」的结果\n\n{item.summary}")
+                    break
+        if not dep_parts:
+            return ""
+        return (
+            "以下是前序任务已完成的分析结果，请直接基于这些结果工作，不要重复已有分析：\n\n"
+            + "\n\n".join(dep_parts)
+            + "\n\n---\n\n"
         )
 
     def _drain_completion_for_agent(self, agent_id: str) -> AgentCompletionEvent | None:
