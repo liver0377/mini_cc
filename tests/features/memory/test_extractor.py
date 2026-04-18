@@ -5,7 +5,7 @@ from mini_cc.features.memory.extractor import (
     MemoryExtractor,
     _parse_extraction_response,
 )
-from mini_cc.models import Message, QueryState, Role
+from mini_cc.models import Message, MessageSource, QueryState, Role
 
 
 class TestParseExtractionResponse:
@@ -38,7 +38,12 @@ class TestParseExtractionResponse:
         assert items == []
 
     def test_multiple_items(self) -> None:
-        text = '{"memories": [{"name": "a", "type": "user", "content": "c1", "description": "d1"}, {"name": "b", "type": "project", "content": "c2", "description": "d2"}]}'
+        text = (
+            '{"memories": ['
+            '{"name": "a", "type": "user", "content": "c1", "description": "d1"}, '
+            '{"name": "b", "type": "project", "content": "c2", "description": "d2"}'
+            "]}"
+        )
         items = _parse_extraction_response(text)
         assert len(items) == 2
 
@@ -85,3 +90,18 @@ class TestShouldExtract:
 
         state.messages.append(Message(role=Role.USER, content="one more"))
         assert not extractor.should_extract(state)
+
+    def test_ignores_agent_summary_and_system_injected_messages(self) -> None:
+        extractor = MemoryExtractor(stream_fn=None, cwd="/tmp")
+        state = QueryState(
+            messages=[
+                Message(role=Role.SYSTEM, content="system"),
+                Message(role=Role.USER, content="real user 1"),
+                Message(role=Role.USER, content="agent summary", source=MessageSource.AGENT_SUMMARY),
+                Message(role=Role.USER, content="system injected", source=MessageSource.SYSTEM_INJECTED),
+                Message(role=Role.USER, content="real user 2"),
+                Message(role=Role.USER, content="real user 3"),
+                Message(role=Role.USER, content="real user 4"),
+            ]
+        )
+        assert extractor.should_extract(state)

@@ -5,6 +5,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from mini_cc.models import AgentBudget as AgentBudget
 from mini_cc.models import QueryState
 
 ScalarValue = str | int | bool
@@ -136,13 +137,6 @@ class AgentTrace(BaseModel):
     base_version_stamp: str = ""
     completed_version_stamp: str = ""
     invalidated_on_resume: bool = False
-
-
-class AgentBudget(BaseModel):
-    max_readonly: int = 5
-    max_write: int = 1
-    remaining_readonly: int = 5
-    remaining_write: int = 1
 
 
 class RunBudget(BaseModel):

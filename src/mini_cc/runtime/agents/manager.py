@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import subprocess
 import threading
 from pathlib import Path
@@ -13,6 +14,7 @@ from mini_cc.models import (
     AgentStatus,
     Event,
     Message,
+    MessageSource,
     QueryState,
     Role,
     TaskType,
@@ -22,6 +24,7 @@ from mini_cc.runtime.agents.bus import AgentEventBus, AgentLifecycleEvent
 from mini_cc.runtime.agents.snapshot import SnapshotService
 from mini_cc.runtime.agents.sub_agent import SubAgent, build_workspace_notice
 from mini_cc.runtime.execution.executor import StreamingToolExecutor
+from mini_cc.runtime.execution.policy import ExecutionPolicy
 from mini_cc.runtime.query.engine import QueryEngine, StreamFn
 from mini_cc.task.service import TaskService
 from mini_cc.tools import create_default_registry, create_readonly_registry
@@ -51,12 +54,41 @@ class AgentManager:
         self._agents: dict[str, SubAgent] = {}
         self._output_dir = project_root / ".mini_cc" / "tasks"
         self._current_step_id: str | None = None
+        self._create_lock = asyncio.Lock()
 
     @property
     def agents(self) -> dict[str, SubAgent]:
         return dict(self._agents)
 
     async def create_agent(
+        self,
+        *,
+        prompt: str,
+        readonly: bool = False,
+        fork: bool = False,
+        parent_state: QueryState | None = None,
+        mode: str = "build",
+        scope_paths: list[str] | None = None,
+        run_id: str | None = None,
+        step_id: str | None = None,
+        work_item_id: str | None = None,
+        role: str | None = None,
+    ) -> SubAgent:
+        async with self._create_lock:
+            return await self._create_agent_inner(
+                prompt=prompt,
+                readonly=readonly,
+                fork=fork,
+                parent_state=parent_state,
+                mode=mode,
+                scope_paths=scope_paths,
+                run_id=run_id,
+                step_id=step_id,
+                work_item_id=work_item_id,
+                role=role,
+            )
+
+    async def _create_agent_inner(
         self,
         *,
         prompt: str,
@@ -144,6 +176,11 @@ class AgentManager:
         agent = self._agents.pop(agent_id, None)
         if agent is None:
             return
+        if agent.background_task is not None and not agent.background_task.done():
+            agent.cancel()
+            agent.background_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await agent.background_task
         if agent.snapshot_svc is not None:
             agent.snapshot_svc.cleanup()
         output_path = self._output_dir / f"{agent_id}.output"
@@ -178,7 +215,7 @@ class AgentManager:
         if fork and parent_state is not None:
             state = parent_state.model_copy(deep=True)
             notice = build_workspace_notice(config, self._project_root)
-            state.messages.append(Message(role=Role.USER, content=notice))
+            state.messages.append(Message(role=Role.USER, content=notice, source=MessageSource.SYSTEM_INJECTED))
             self._inject_sub_agent_notice(state, config)
             return state
 
@@ -208,7 +245,7 @@ class AgentManager:
             notice = (
                 "\n\n## 子 Agent 身份声明\n"
                 "你是一个只读子 Agent，在主项目目录中运行，但只能使用只读工具。\n"
-                "- 你只有只读工具（file_read, glob, grep, bash）\n"
+                "- 你只有只读工具（file_read, glob, grep, scan_dir, plan_agents）\n"
                 "- 不要修改任何文件\n"
                 f"- 你的工作目录: {config.workspace_path}\n"
                 f"- 原始项目路径: {self._project_root}\n"
@@ -232,9 +269,18 @@ class AgentManager:
     def _build_engine(self, config: AgentConfig) -> tuple[QueryEngine, SnapshotService | None, threading.Event]:
         snapshot: SnapshotService | None = None
         interrupt_event = threading.Event()
+        policy = ExecutionPolicy(
+            readonly=config.is_readonly,
+            scope_paths=config.scope_paths,
+            workspace_root=config.workspace_path,
+        )
         if config.is_readonly:
             registry = create_readonly_registry()
-            executor = StreamingToolExecutor(registry, is_interrupted=interrupt_event.is_set)
+            executor = StreamingToolExecutor(
+                registry,
+                is_interrupted=interrupt_event.is_set,
+                policy=policy,
+            )
         else:
             registry = create_default_registry()
             snapshot = SnapshotService(self._project_root, config.agent_id)
@@ -242,6 +288,7 @@ class AgentManager:
                 registry,
                 pre_execute_hook=snapshot.on_tool_execute,
                 is_interrupted=interrupt_event.is_set,
+                policy=policy,
             )
         tool_use_ctx = ToolUseContext(
             get_schemas=registry.to_api_format,

@@ -44,3 +44,10 @@ class AgentId:
 
     def __hash__(self) -> int:
         return hash(self.value)
+
+
+class AgentBudget(BaseModel):
+    max_readonly: int = 5
+    max_write: int = 1
+    remaining_readonly: int = 5
+    remaining_write: int = 1

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
-
 import pytest
 
 from mini_cc.features.compression.compressor import (
@@ -10,7 +8,7 @@ from mini_cc.features.compression.compressor import (
     replace_with_summary,
     should_auto_compact,
 )
-from mini_cc.models import ContextLengthExceededError, Message, QueryState, Role, TextDelta
+from mini_cc.models import ContextLengthExceededError, Message, MessageSource, QueryState, Role, TextDelta
 
 
 class TestEstimateTokens:
@@ -79,6 +77,7 @@ class TestReplaceWithSummary:
         assert state.messages[0].content == "system prompt"
         assert state.messages[1].role == Role.USER
         assert "Summary of conversation" in state.messages[1].content
+        assert state.messages[1].source == MessageSource.INTERNAL
 
     def test_works_without_system_message(self) -> None:
         state = QueryState(
@@ -138,6 +137,26 @@ class TestCompressMessages:
         user_content = received_messages[1].content
         assert "已有摘要" in user_content
         assert "最近对话" in user_content
+
+    async def test_skips_agent_summary_and_system_injected_messages(self) -> None:
+        received_messages: list[Message] = []
+
+        async def _fake_stream(messages: list[Message], tools: object):
+            received_messages.extend(messages)
+            yield TextDelta(content="Updated summary")
+
+        msgs = [
+            Message(role=Role.SYSTEM, content="system"),
+            Message(role=Role.USER, content="real user", source=MessageSource.USER),
+            Message(role=Role.USER, content="ignored summary", source=MessageSource.AGENT_SUMMARY),
+            Message(role=Role.USER, content="ignored notice", source=MessageSource.SYSTEM_INJECTED),
+            Message(role=Role.ASSISTANT, content="assistant reply"),
+        ]
+        await compress_messages(msgs, _fake_stream)
+        user_content = received_messages[1].content or ""
+        assert "ignored summary" not in user_content
+        assert "ignored notice" not in user_content
+        assert "real user" in user_content
 
 
 class TestContextLengthExceededError:

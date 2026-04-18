@@ -5,7 +5,7 @@ import sys
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from prompt_toolkit import PromptSession
@@ -17,9 +17,9 @@ from rich.text import Text
 
 from mini_cc import __version__
 from mini_cc.app.repl import run_message
-from mini_cc.context.engine_context import EngineContext, create_engine
-from mini_cc.features.compression.compressor import compress_messages, replace_with_summary
-from mini_cc.models import Message, QueryState, Role
+from mini_cc.context.assembler import create_engine
+from mini_cc.context.engine_context import EngineContext
+from mini_cc.models import QueryState, Role
 
 app = typer.Typer(
     name="mini-cc",
@@ -115,14 +115,11 @@ def _print_banner(mode: str) -> None:
 
 
 def _build_initial_state(ctx: EngineContext, mode: str) -> QueryState:
-    system_content = ctx.prompt_builder.build(ctx.env_info, mode=mode)
-    return QueryState(messages=[Message(role=Role.SYSTEM, content=system_content)])
+    return ctx.new_query_state(mode=mode)
 
 
 def _rebuild_system_message(state: QueryState, ctx: EngineContext, mode: str) -> None:
-    from mini_cc.app.presentation import rebuild_system_message
-
-    rebuild_system_message(state, ctx.prompt_builder, ctx.env_info, mode=mode)
+    ctx.apply_system_prompt(state, mode=mode)
 
 
 def _print_mode_change(mode: str) -> None:
@@ -161,38 +158,55 @@ def chat() -> None:
     state = _build_initial_state(engine_ctx, mode_state.mode)
     _print_banner(mode_state.mode)
 
-    while True:
-        try:
-            user_input = session.prompt(_get_prompt_message(mode_state))
-        except KeyboardInterrupt:
-            rprint("[dim]（输入已中断）[/]")
-            continue
-        except EOFError:
-            rprint("[dim]再见！[/]")
-            break
+    loop = asyncio.new_event_loop()
 
-        if mode_state.mode != _get_current_system_mode(state):
-            _rebuild_system_message(state, engine_ctx, mode_state.mode)
-            _print_mode_change(mode_state.mode)
+    def _run_async(coro: Any) -> Any:
+        return asyncio.run_coroutine_threadsafe(coro, loop).result()
 
-        text = user_input.strip()
-        if not text:
-            continue
+    import threading as _threading
 
-        if text.lower() in {"exit", "quit"}:
-            rprint("[dim]再见！[/]")
-            break
+    def _loop_runner() -> None:
+        loop.run_forever()
 
-        if text.lower() == "/compact":
+    loop_thread = _threading.Thread(target=_loop_runner, daemon=True)
+    loop_thread.start()
+
+    try:
+        while True:
             try:
-                summary = asyncio.run(compress_messages(state.messages, engine_ctx.engine._stream_fn, engine_ctx.model))
-                replace_with_summary(state, summary)
-                rprint("[dim]（对话已手动压缩）[/]")
-            except Exception as e:
-                rprint(f"[bold red]压缩失败: {e}[/]")
+                user_input = session.prompt(_get_prompt_message(mode_state))
+            except KeyboardInterrupt:
+                rprint("[dim]（输入已中断）[/]")
+                continue
+            except EOFError:
+                rprint("[dim]再见！[/]")
+                break
+
+            if mode_state.mode != _get_current_system_mode(state):
+                _rebuild_system_message(state, engine_ctx, mode_state.mode)
+                _print_mode_change(mode_state.mode)
+
+            text = user_input.strip()
+            if not text:
+                continue
+
+            if text.lower() in {"exit", "quit"}:
+                rprint("[dim]再见！[/]")
+                break
+
+            if text.lower() == "/compact":
+                try:
+                    _run_async(engine_ctx.compact_state(state))
+                    rprint("[dim]（对话已手动压缩）[/]")
+                except Exception as e:
+                    rprint(f"[bold red]压缩失败: {e}[/]")
+                rprint()
+                continue
+
+            run_message(engine_ctx, text, state, interrupted_event, loop)
+
             rprint()
-            continue
-
-        run_message(engine_ctx.engine, text, state, interrupted_event)
-
-        rprint()
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=3.0)
+        loop.close()

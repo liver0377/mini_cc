@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.text import Text
 
 from mini_cc.app.presentation import COMPACT_LABELS
-from mini_cc.context.engine_context import _EngineConfig
+from mini_cc.context.engine_context import EngineContext
 from mini_cc.models import (
     AgentCompletionEvent,
     AgentStartEvent,
@@ -22,7 +22,7 @@ from mini_cc.models import (
     ToolCallStart,
     ToolResultEvent,
 )
-from mini_cc.runtime.query import QueryEngine
+from mini_cc.runtime.execution.factories import _EngineConfig
 
 _MAX_TOOL_OUTPUT_DISPLAY = 200
 
@@ -95,14 +95,14 @@ def render_event(event: Event, *, console: Console | None = None) -> None:
 
 
 async def _collect_events(
-    engine: QueryEngine,
+    engine_ctx: EngineContext,
     prompt: str,
     state: QueryState,
     interrupted_event: threading.Event,
 ) -> list[Event]:
     events: list[Event] = []
     try:
-        async for event in engine.submit_message(prompt, state):
+        async for event in engine_ctx.submit_message(prompt, state):
             events.append(event)
             render_event(event)
     except KeyboardInterrupt:
@@ -111,16 +111,23 @@ async def _collect_events(
 
 
 def run_message(
-    engine: QueryEngine,
+    engine_ctx: EngineContext,
     prompt: str,
     state: QueryState,
     interrupted_event: threading.Event,
+    loop: asyncio.AbstractEventLoop,
 ) -> list[Event]:
     interrupted_event.clear()
     try:
-        events = asyncio.run(_collect_events(engine, prompt, state, interrupted_event))
+        events = asyncio.run_coroutine_threadsafe(
+            _collect_events(engine_ctx, prompt, state, interrupted_event),
+            loop,
+        ).result()
     except KeyboardInterrupt:
         interrupted_event.set()
+        rprint("\n[dim]（已中断）[/]")
+        return []
+    except Exception:
         rprint("\n[dim]（已中断）[/]")
         return []
     return events

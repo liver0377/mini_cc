@@ -2,16 +2,13 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 from pydantic import BaseModel, Field
 
-from mini_cc.models import QueryState
+from mini_cc.models import AgentBudget, QueryState
 from mini_cc.runtime.agents.manager import AgentManager
 from mini_cc.runtime.agents.sub_agent import SubAgent
-
-if TYPE_CHECKING:
-    from mini_cc.harness.models import AgentBudget
 
 
 class AgentDispatchRequest(BaseModel):

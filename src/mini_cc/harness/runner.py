@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import secrets
 import threading
+from collections.abc import Callable
+from typing import Any
 
 from mini_cc.context.engine_context import EngineContext
 from mini_cc.harness.checkpoint import CheckpointStore
@@ -21,7 +23,7 @@ from mini_cc.harness.models import (
 from mini_cc.harness.policy import PolicyEngine
 from mini_cc.harness.step_runner import QueryEventSink, StepRunner
 from mini_cc.harness.supervisor import HarnessEventSink, SupervisorLoop
-from mini_cc.runtime.agents import AgentEventBus
+from mini_cc.runtime.facade import RuntimeFacade
 from mini_cc.tools.bash import Bash
 
 
@@ -34,10 +36,9 @@ class RunHarness:
         policy_engine: PolicyEngine | None = None,
         judge: RunJudge | None = None,
         event_sink: HarnessEventSink | None = None,
-        lifecycle_bus: AgentEventBus | None = None,
+        drain_lifecycle: Callable[[], list[Any]] | None = None,
     ) -> None:
         self._store = store or CheckpointStore()
-        self._lifecycle_bus = lifecycle_bus
         self._step_runner = step_runner
         self._run_interrupts: dict[str, threading.Event] = {}
         self._supervisor = SupervisorLoop(
@@ -46,27 +47,29 @@ class RunHarness:
             policy_engine=policy_engine,
             judge=judge,
             event_sink=event_sink,
-            lifecycle_bus=lifecycle_bus,
+            drain_lifecycle=drain_lifecycle,
         )
 
     @classmethod
     def create_default(
         cls,
         *,
+        runtime: RuntimeFacade | None = None,
         engine_ctx: EngineContext | None = None,
         store: CheckpointStore | None = None,
         event_sink: HarnessEventSink | None = None,
         query_event_sink: QueryEventSink | None = None,
     ) -> RunHarness:
+        effective_runtime = runtime or (RuntimeFacade(engine_ctx) if engine_ctx is not None else None)
         return cls(
             store=store,
             step_runner=StepRunner(
-                engine_ctx=engine_ctx,
+                runtime=effective_runtime,
                 bash_tool=Bash(),
                 query_event_sink=query_event_sink,
             ),
             event_sink=event_sink,
-            lifecycle_bus=engine_ctx.lifecycle_bus if engine_ctx is not None else None,
+            drain_lifecycle=effective_runtime.drain_lifecycle_events if effective_runtime is not None else None,
         )
 
     async def run(

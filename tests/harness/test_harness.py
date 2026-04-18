@@ -59,6 +59,7 @@ from mini_cc.models import (
     ToolResultEvent,
 )
 from mini_cc.runtime.agents import AgentEventBus
+from mini_cc.runtime.facade import RuntimeFacade
 from mini_cc.runtime.query import QueryEngine
 from mini_cc.tools.bash import Bash
 
@@ -469,7 +470,7 @@ class TestRunHarness:
 
         harness = RunHarness.create_default(engine_ctx=engine_ctx)
 
-        assert harness._lifecycle_bus is engine_ctx.lifecycle_bus
+        assert harness._supervisor._drain_lifecycle is not None
 
     async def test_run_retries_and_completes(self, tmp_path) -> None:
         store = CheckpointStore(base_dir=tmp_path)
@@ -705,14 +706,16 @@ class TestRunHarness:
             return
             yield
 
-        engine_ctx.engine = QueryEngine(
-            stream_fn=_slow_stream,
-            tool_use_ctx=ToolUseContext(
-                get_schemas=lambda: [],
-                execute=_noop_execute,
-                is_interrupted=lambda: engine_ctx.is_interrupted,
-            ),
-            model="test-model",
+        engine_ctx.replace_engine(
+            QueryEngine(
+                stream_fn=_slow_stream,
+                tool_use_ctx=ToolUseContext(
+                    get_schemas=lambda: [],
+                    execute=_noop_execute,
+                    is_interrupted=lambda: engine_ctx.is_interrupted,
+                ),
+                model="test-model",
+            )
         )
         harness = RunHarness.create_default(engine_ctx=engine_ctx, store=CheckpointStore(base_dir=tmp_path))
 
@@ -1103,8 +1106,8 @@ class TestStepRunnerQueryIntegration:
 
         engine_ctx = _make_engine_ctx(tmp_path)
         fake_manager = _FakeManager()
-        engine_ctx.agent_manager = fake_manager  # type: ignore[assignment]
-        runner = StepRunner(engine_ctx=engine_ctx)
+        engine_ctx.configure_runtime(agent_manager=fake_manager)
+        runner = StepRunner(runtime=RuntimeFacade(engine_ctx))
         run_state = RunState(run_id="run-delegate-ro", goal="test")
         step = Step(
             kind=StepKind.ANALYZE_REPO,
@@ -1170,8 +1173,8 @@ class TestStepRunnerQueryIntegration:
 
         engine_ctx = _make_engine_ctx(tmp_path)
         fake_manager = _FakeManager()
-        engine_ctx.agent_manager = fake_manager  # type: ignore[assignment]
-        runner = StepRunner(engine_ctx=engine_ctx)
+        engine_ctx.configure_runtime(agent_manager=fake_manager)
+        runner = StepRunner(runtime=RuntimeFacade(engine_ctx))
         run_state = RunState(run_id="run-delegate-write", goal="test")
         step = Step(
             kind=StepKind.EDIT_CODE,
@@ -1200,8 +1203,8 @@ class TestStepRunnerQueryIntegration:
 
     async def test_query_backed_step_uses_engine_context(self, tmp_path) -> None:
         engine_ctx = _make_engine_ctx(tmp_path)
-        engine_ctx.agent_manager = None
-        runner = StepRunner(engine_ctx=engine_ctx)
+        engine_ctx.configure_runtime(agent_manager=None)
+        runner = StepRunner(runtime=RuntimeFacade(engine_ctx))
         run_state = RunState(run_id="run-query", goal="test")
         step = Step(
             kind=StepKind.MAKE_PLAN,
@@ -1239,7 +1242,7 @@ class TestStepRunnerQueryIntegration:
             env_info=env_info,
             model="test-model",
         )
-        runner = StepRunner(engine_ctx=engine_ctx)
+        runner = StepRunner(runtime=RuntimeFacade(engine_ctx))
         run_state = RunState(
             run_id="run-query-timeout",
             goal="test",
@@ -1593,7 +1596,7 @@ class TestSupervisorLifecycleDrain:
                 StepKind.FINALIZE: _handler,
             }
         )
-        harness = RunHarness(store=store, step_runner=runner, lifecycle_bus=bus)
+        harness = RunHarness(store=store, step_runner=runner, drain_lifecycle=bus.drain)
 
         result = await harness.run(
             "test lifecycle",
@@ -1648,7 +1651,7 @@ class TestSupervisorLifecycleDrain:
                 StepKind.FINALIZE: _handler,
             }
         )
-        harness = RunHarness(store=store, step_runner=runner, lifecycle_bus=bus)
+        harness = RunHarness(store=store, step_runner=runner, drain_lifecycle=bus.drain)
 
         result = await harness.run(
             "test lifecycle result signals",
@@ -1702,7 +1705,7 @@ class TestSupervisorLifecycleDrain:
             return StepResult(success=True, summary="plan done", progress_made=True)
 
         runner = StepRunner(handlers={StepKind.MAKE_PLAN: _handler})
-        harness = RunHarness(store=store, step_runner=runner, lifecycle_bus=bus)
+        harness = RunHarness(store=store, step_runner=runner, drain_lifecycle=bus.drain)
 
         result = await harness.run(
             "test wait for agents",
@@ -1740,7 +1743,7 @@ class TestSupervisorStepExceptions:
 class TestAgentBudgetInStepRunner:
     async def test_query_step_injects_budget(self, tmp_path) -> None:
         engine_ctx = _make_engine_ctx(tmp_path)
-        runner = StepRunner(engine_ctx=engine_ctx)
+        runner = StepRunner(runtime=RuntimeFacade(engine_ctx))
         run_state = RunState(run_id="run-budget", goal="test")
         step = Step(
             kind=StepKind.ANALYZE_REPO,
@@ -1759,7 +1762,7 @@ class TestAgentBudgetInStepRunner:
 
     async def test_query_step_uses_configured_agent_budget(self, tmp_path) -> None:
         engine_ctx = _make_engine_ctx(tmp_path)
-        runner = StepRunner(engine_ctx=engine_ctx)
+        runner = StepRunner(runtime=RuntimeFacade(engine_ctx))
         run_state = RunState(
             run_id="run-budget-configured",
             goal="test",
@@ -1782,7 +1785,7 @@ class TestAgentBudgetInStepRunner:
 
     async def test_query_step_blocks_new_write_budget_when_write_agent_active(self, tmp_path) -> None:
         engine_ctx = _make_engine_ctx(tmp_path)
-        runner = StepRunner(engine_ctx=engine_ctx)
+        runner = StepRunner(runtime=RuntimeFacade(engine_ctx))
         run_state = RunState(
             run_id="run-write-serial",
             goal="test",

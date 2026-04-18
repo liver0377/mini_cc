@@ -31,6 +31,7 @@ class Task(BaseModel):
     blocks: list[int] = Field(default_factory=list)
     blocked_by: list[int] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    revision: int = 0
 
     agent_id: str | None = None
     prompt: str | None = None

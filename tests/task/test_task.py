@@ -199,3 +199,59 @@ class TestTaskService:
         ready = await service.get_ready_tasks()
         ready_ids = [t.id for t in ready]
         assert t2.id in ready_ids
+
+
+class TestTaskStateTransitions:
+    async def test_invalid_double_complete(self, service):
+        created = await service.create(type=TaskType.LOCAL_AGENT, subject="T", description="d")
+        await service.complete(created.id)
+        with pytest.raises(ValueError, match="Invalid task state transition"):
+            await service.complete(created.id)
+
+    async def test_invalid_cancel_completed(self, service):
+        created = await service.create(type=TaskType.LOCAL_AGENT, subject="T", description="d")
+        await service.complete(created.id)
+        with pytest.raises(ValueError, match="Invalid task state transition"):
+            await service.cancel(created.id)
+
+    async def test_invalid_fail_completed(self, service):
+        created = await service.create(type=TaskType.LOCAL_AGENT, subject="T", description="d")
+        await service.complete(created.id)
+        with pytest.raises(ValueError, match="Invalid task state transition"):
+            await service.fail(created.id, error="late")
+
+    async def test_valid_pending_to_completed(self, service):
+        created = await service.create(type=TaskType.LOCAL_AGENT, subject="T", description="d")
+        completed = await service.complete(created.id)
+        assert completed.status == TaskStatus.COMPLETED
+
+    async def test_valid_pending_to_failed(self, service):
+        created = await service.create(type=TaskType.LOCAL_AGENT, subject="T", description="d")
+        failed = await service.fail(created.id, error="bad")
+        assert failed.status == TaskStatus.FAILED
+
+    async def test_valid_progress_to_completed(self, service):
+        created = await service.create(type=TaskType.LOCAL_AGENT, subject="T", description="d")
+        await service.claim(created.id, owner="agent-1")
+        completed = await service.complete(created.id)
+        assert completed.status == TaskStatus.COMPLETED
+
+
+class TestTaskRevision:
+    async def test_initial_revision_is_zero(self, service):
+        created = await service.create(type=TaskType.LOCAL_AGENT, subject="T", description="d")
+        fetched = await service.get(created.id)
+        assert fetched is not None
+        assert fetched.revision == 0
+
+    async def test_complete_increments_revision(self, service):
+        created = await service.create(type=TaskType.LOCAL_AGENT, subject="T", description="d")
+        completed = await service.complete(created.id)
+        assert completed.revision == 1
+
+    async def test_cancel_increments_revision(self, service):
+        created = await service.create(type=TaskType.LOCAL_AGENT, subject="T", description="d")
+        await service.cancel(created.id)
+        fetched = await service.get(created.id)
+        assert fetched is not None
+        assert fetched.revision == 1

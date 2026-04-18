@@ -12,6 +12,13 @@ class Role(StrEnum):
     TOOL = "tool"
 
 
+class MessageSource(StrEnum):
+    USER = "user"
+    SYSTEM_INJECTED = "system-injected"
+    AGENT_SUMMARY = "agent-summary"
+    INTERNAL = "internal"
+
+
 class ToolCall(BaseModel):
     id: str
     name: str
@@ -24,3 +31,4 @@ class Message(BaseModel):
     tool_calls: list[ToolCall] = Field(default_factory=list)
     tool_call_id: str | None = None
     name: str | None = None
+    source: MessageSource = MessageSource.USER

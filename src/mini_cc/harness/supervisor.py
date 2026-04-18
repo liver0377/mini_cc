@@ -6,6 +6,7 @@ import secrets
 import threading
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from typing import Any
 
 from mini_cc.harness.checkpoint import CheckpointStore
 from mini_cc.harness.doc_generator import RunDocGenerator
@@ -30,7 +31,6 @@ from mini_cc.harness.models import (
 from mini_cc.harness.policy import PolicyAction, PolicyDecision, PolicyEngine
 from mini_cc.harness.scheduler import Scheduler
 from mini_cc.harness.step_runner import StepRunner
-from mini_cc.runtime.agents import AgentEventBus, AgentLifecycleEvent
 
 HarnessEventSink = Callable[[HarnessEvent, RunState], Awaitable[None] | None]
 
@@ -47,7 +47,7 @@ class SupervisorLoop:
         doc_generator: RunDocGenerator | None = None,
         scheduler: Scheduler | None = None,
         event_sink: HarnessEventSink | None = None,
-        lifecycle_bus: AgentEventBus | None = None,
+        drain_lifecycle: Callable[[], list[Any]] | None = None,
     ) -> None:
         self._store = store
         self._step_runner = step_runner
@@ -57,7 +57,7 @@ class SupervisorLoop:
         self._doc_generator = doc_generator or RunDocGenerator()
         self._scheduler = scheduler or Scheduler()
         self._event_sink = event_sink
-        self._lifecycle_bus = lifecycle_bus
+        self._drain_lifecycle = drain_lifecycle
 
     async def run(self, run_state: RunState) -> RunState:
         return await self.run_with_interrupt(run_state, interrupt_event=None)
@@ -675,12 +675,12 @@ class SupervisorLoop:
         self._step_runner.clear_step_context()
 
     def _drain_and_update_agents(self, run_state: RunState) -> None:
-        if self._lifecycle_bus is None:
+        if self._drain_lifecycle is None:
             return
-        events = self._lifecycle_bus.drain()
+        events = self._drain_lifecycle()
         self._update_spawned_agents(run_state, events)
 
-    def _update_spawned_agents(self, run_state: RunState, events: list[AgentLifecycleEvent]) -> None:
+    def _update_spawned_agents(self, run_state: RunState, events: list[Any]) -> None:
         for event in events:
             if event.event_type == "created":
                 trace = AgentTrace(

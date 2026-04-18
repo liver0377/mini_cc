@@ -102,9 +102,14 @@ src/mini_cc/
 │   │   └── sub_agent.py
 │   ├── execution/
 │   │   ├── __init__.py
-│   │   └── executor.py
+│   │   ├── executor.py
+│   │   ├── factories.py
+│   │   └── policy.py
+│   ├── facade.py              # RuntimeFacade: harness→runtime 边界接口
 │   └── query/
 │       ├── __init__.py
+│       ├── agent_coordinator.py
+│       ├── compaction.py
 │       └── engine.py
 ├── task/
 │   ├── __init__.py
@@ -178,12 +183,16 @@ src/mini_cc/
   - `agents`
   - `query`
   - `execution`
+  - `facade.py`（RuntimeFacade）
 
 约束：
 
 - 不依赖 `app`
 - 不依赖 `harness` 的上层策略
 - 只负责执行，不负责 run 级调度
+- `RuntimeFacade` 是 `harness` 访问 `runtime` 能力的唯一入口
+- `harness` 不直接导入 `runtime` 内部模块（`AgentManager`、`SubAgent`、`AgentDispatcher`）
+- `harness` 通过 `RuntimeFacade` 或 `Callable` 回调获取 agent 派发、生命周期事件、预算管理等能力
 
 ### 5. `harness`
 
@@ -196,7 +205,9 @@ src/mini_cc/
 
 约束：
 
-- 通过 `runtime` 调执行能力
+- 通过 `RuntimeFacade` 调 `runtime` 执行能力
+- 不直接导入 `runtime.agents` 内部（`AgentManager`、`SubAgent`、`AgentDispatcher`）
+- `SupervisorLoop` 通过 `drain_lifecycle: Callable` 获取 agent 生命周期事件，不持有 `AgentEventBus` 引用
 - 不直接变成 UI 层
 
 ### 6. `models`

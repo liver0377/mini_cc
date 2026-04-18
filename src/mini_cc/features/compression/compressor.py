@@ -6,7 +6,7 @@ from typing import Any
 import tiktoken
 
 from mini_cc.features.compression.prompts import COMPRESSION_SYSTEM_PROMPT
-from mini_cc.models import Message, QueryState, Role, TextDelta
+from mini_cc.models import Message, MessageSource, QueryState, Role, TextDelta
 
 _AUTO_COMPACT_THRESHOLD = int(os.environ.get("AUTO_COMPACT_THRESHOLD", "80000"))
 _FALLBACK_ENCODING = "cl100k_base"
@@ -52,6 +52,7 @@ def replace_with_summary(state: QueryState, summary: str) -> None:
         Message(
             role=Role.USER,
             content=f"以下是之前对话的摘要：\n\n{summary}",
+            source=MessageSource.INTERNAL,
         )
     )
 
@@ -59,7 +60,7 @@ def replace_with_summary(state: QueryState, summary: str) -> None:
 def _format_messages_for_compression(messages: list[Message]) -> str:
     parts: list[str] = []
     for msg in messages:
-        if msg.role == Role.SYSTEM:
+        if not _is_compression_relevant(msg):
             continue
         role_label = msg.role.value
         content = msg.content or ""
@@ -94,7 +95,7 @@ async def compress_messages(
     conversation_text = _format_messages_for_compression(messages)
 
     existing_summary = ""
-    non_system = [m for m in messages if m.role != Role.SYSTEM]
+    non_system = [m for m in messages if _is_compression_relevant(m)]
     if (
         len(non_system) >= 1
         and non_system[0].role == Role.USER
@@ -114,3 +115,9 @@ async def compress_messages(
     ]
 
     return await _call_llm_for_summary(stream_fn, prompt_messages)
+
+
+def _is_compression_relevant(message: Message) -> bool:
+    if message.role == Role.SYSTEM:
+        return False
+    return message.source in {MessageSource.USER, MessageSource.INTERNAL}

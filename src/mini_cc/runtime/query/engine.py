@@ -7,11 +7,10 @@ from typing import Any
 
 from mini_cc.context.tool_use import ToolUseContext
 from mini_cc.models import (
-    AgentCompletionEvent,
-    CompactOccurred,
     ContextLengthExceededError,
     Event,
     Message,
+    MessageSource,
     QueryState,
     QueryTracking,
     Role,
@@ -22,6 +21,8 @@ from mini_cc.models import (
     TurnRecord,
     collect_tool_calls,
 )
+from mini_cc.runtime.query.agent_coordinator import AgentCompletionCoordinator
+from mini_cc.runtime.query.compaction import CompactionController
 
 StreamFn = Callable[
     [list[Message], list[dict[str, Any]]],
@@ -30,11 +31,8 @@ StreamFn = Callable[
 
 PostTurnHook = Callable[[QueryState], Awaitable[None]]
 
-CompactFn = Callable[[list[Message]], Awaitable[str]]
 
-ShouldCompactFn = Callable[[list[Message]], bool]
-
-ReplaceSummaryFn = Callable[[QueryState, str], None]
+_DEFAULT_MAX_TURNS = 50
 
 
 class QueryEngine:
@@ -42,79 +40,57 @@ class QueryEngine:
         self,
         stream_fn: StreamFn,
         tool_use_ctx: ToolUseContext,
-        completion_queue: asyncio.Queue[AgentCompletionEvent] | None = None,
-        agent_event_queue: asyncio.Queue[Event] | None = None,
+        completion_queue: asyncio.Queue[Any] | None = None,
+        agent_event_queue: asyncio.Queue[Any] | None = None,
         post_turn_hook: PostTurnHook | None = None,
         model: str = "",
         active_agents_fn: Callable[[], int] | None = None,
-        compact_fn: CompactFn | None = None,
-        should_compact_fn: ShouldCompactFn | None = None,
-        replace_summary_fn: ReplaceSummaryFn | None = None,
+        compact_fn: Any | None = None,
+        should_compact_fn: Any | None = None,
+        replace_summary_fn: Any | None = None,
+        max_turns: int = _DEFAULT_MAX_TURNS,
     ) -> None:
         self._stream_fn = stream_fn
         self._tool_use_ctx = tool_use_ctx
-        self._completion_queue = completion_queue
-        self._agent_event_queue = agent_event_queue
         self._post_turn_hook = post_turn_hook
         self._model = model
-        self._active_agents_fn = active_agents_fn
-        self._compact_fn = compact_fn
-        self._should_compact_fn = should_compact_fn
-        self._replace_summary_fn = replace_summary_fn
+        self._max_turns = max_turns
         self.state: QueryState | None = None
+
+        self._compaction = CompactionController(
+            compact_fn=compact_fn,
+            should_compact_fn=should_compact_fn,
+            replace_summary_fn=replace_summary_fn,
+        )
+
+        self._coordinator = AgentCompletionCoordinator(
+            completion_queue=completion_queue,
+            agent_event_queue=agent_event_queue,
+            active_agents_fn=active_agents_fn,
+            is_interrupted_fn=lambda: tool_use_ctx.is_interrupted,
+        )
 
     async def submit_message(self, prompt: str, state: QueryState | None = None) -> AsyncGenerator[Event, None]:
         if state is None:
             state = QueryState()
-        state.messages.append(Message(role=Role.USER, content=prompt))
+        state.messages.append(Message(role=Role.USER, content=prompt, source=MessageSource.USER))
         self.state = state
         async for event in self._query_loop(state):
             yield event
-
-    async def _drain_completions(self) -> AsyncGenerator[AgentCompletionEvent, None]:
-        if self._completion_queue is None:
-            return
-        while not self._completion_queue.empty():
-            try:
-                evt = self._completion_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-            yield evt
-
-    async def _drain_agent_events(self) -> AsyncGenerator[Event, None]:
-        if self._agent_event_queue is None:
-            return
-        while not self._agent_event_queue.empty():
-            try:
-                event = self._agent_event_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-            yield event
-
-    async def _compact(self, state: QueryState, *, reason: str) -> CompactOccurred | None:
-        if self._compact_fn is None or self._replace_summary_fn is None:
-            return None
-        if self._should_compact_fn is not None and not self._should_compact_fn(state.messages):
-            return None
-        summary = await self._compact_fn(state.messages)
-        self._replace_summary_fn(state, summary)
-        return CompactOccurred(reason=reason)
 
     async def _query_loop(self, state: QueryState) -> AsyncGenerator[Event, None]:
         tracking = QueryTracking()
         has_attempted_reactive = False
 
-        while True:
+        while tracking.turn < self._max_turns:
             if self._tool_use_ctx.is_interrupted:
                 break
 
-            async for notification in self._drain_completions():
-                yield notification
-            async for event in self._drain_agent_events():
+            async for event in self._coordinator.drain_all():
                 yield event
 
-            if self._should_compact_fn is not None and self._should_compact_fn(state.messages):
-                compact_event = await self._compact(state, reason="auto")
+            if self._compaction.should_compact(state.messages):
+                compact_event = await self._compaction.compact(state, reason="auto")
                 if compact_event is not None:
                     yield compact_event
                 has_attempted_reactive = False
@@ -132,7 +108,7 @@ class QueryEngine:
                 if has_attempted_reactive:
                     raise
                 has_attempted_reactive = True
-                compact_event = await self._compact(state, reason="reactive")
+                compact_event = await self._compaction.compact(state, reason="reactive")
                 if compact_event is not None:
                     yield compact_event
                 continue
@@ -141,21 +117,20 @@ class QueryEngine:
             if not tool_calls:
                 assistant_content = _extract_text_content(turn_events)
 
-                if self._should_wait_for_agents():
+                if self._coordinator.has_completion_queue and self._coordinator.has_active_agents:
                     state.messages.append(Message(role=Role.ASSISTANT, content=assistant_content))
 
-                    async for event in self._drain_agent_events():
+                    async for event in self._coordinator.drain_agent_events():
                         yield event
 
-                    completions, waiting_events = await self._collect_all_completions()
+                    completions, waiting_events = await self._coordinator.collect_all_completions()
                     for event in waiting_events:
                         yield event
                     for evt in completions:
                         yield evt
 
                     if completions:
-                        summary = _build_agent_summary(completions)
-                        state.messages.append(Message(role=Role.USER, content=summary))
+                        self._coordinator.inject_summary(state, completions)
                         has_attempted_reactive = False
                         continue
 
@@ -191,12 +166,12 @@ class QueryEngine:
 
             tool_results: list[ToolResultEvent] = []
             async for result in self._tool_use_ctx.execute(allowed):
-                async for event in self._drain_agent_events():
+                async for event in self._coordinator.drain_agent_events():
                     yield event
                 yield result
                 tool_results.append(result)
 
-            async for event in self._drain_agent_events():
+            async for event in self._coordinator.drain_agent_events():
                 yield event
 
             assistant_content = _extract_text_content(turn_events)
@@ -240,59 +215,10 @@ class QueryEngine:
             if self._post_turn_hook is not None:
                 await self._post_turn_hook(state)
 
-        async for notification in self._drain_completions():
+        async for notification in self._coordinator.drain_completions():
             yield notification
-        async for event in self._drain_agent_events():
+        async for event in self._coordinator.drain_agent_events():
             yield event
-
-    def _should_wait_for_agents(self) -> bool:
-        return (
-            self._completion_queue is not None and self._active_agents_fn is not None and self._active_agents_fn() > 0
-        )
-
-    async def _collect_all_completions(self) -> tuple[list[AgentCompletionEvent], list[Event]]:
-        assert self._completion_queue is not None
-        assert self._active_agents_fn is not None
-
-        completions: list[AgentCompletionEvent] = []
-        waiting_events: list[Event] = []
-        async for evt in self._drain_completions():
-            completions.append(evt)
-        async for event in self._drain_agent_events():
-            waiting_events.append(event)
-
-        while self._active_agents_fn() > 0:
-            if self._tool_use_ctx.is_interrupted:
-                break
-            try:
-                evt = await asyncio.wait_for(self._completion_queue.get(), timeout=1.0)
-            except TimeoutError:
-                async for event in self._drain_agent_events():
-                    waiting_events.append(event)
-                continue
-            completions.append(evt)
-            async for event in self._drain_agent_events():
-                waiting_events.append(event)
-
-        return completions, waiting_events
-
-
-def _build_agent_summary(completions: list[AgentCompletionEvent]) -> str:
-    summary_parts: list[str] = []
-    for c in completions:
-        status_label = "成功" if c.success else "失败"
-        stale_label = " [结果可能过期]" if c.is_stale else ""
-        version_lines = ""
-        if c.base_version_stamp or c.completed_version_stamp:
-            version_lines = (
-                f"\n\nbase_version: {c.base_version_stamp or '(无)'}"
-                f"\ncompleted_version: {c.completed_version_stamp or '(无)'}"
-            )
-        summary_parts.append(
-            f"## 子 Agent {c.agent_id} (Task #{c.task_id}) - {status_label}{stale_label}\n\n{c.output}{version_lines}"
-        )
-    summary = "\n\n---\n\n".join(summary_parts)
-    return f"以下是之前启动的后台只读子 Agent 的完成结果。\n请基于这些结果，继续回复用户的原始问题。\n\n{summary}"
 
 
 def _extract_text_content(events: list[Event]) -> str:

@@ -10,6 +10,8 @@ from mini_cc.tools.grep import GrepTool
 from mini_cc.tools.plan_agents import PlanAgentsTool
 from mini_cc.tools.scan_dir import ScanDirTool
 
+READONLY_TOOL_NAMES = frozenset({"file_read", "glob", "grep", "scan_dir", "plan_agents"})
+
 
 def create_default_registry() -> ToolRegistry:
     registry = ToolRegistry()
@@ -29,7 +31,6 @@ def create_readonly_registry() -> ToolRegistry:
     registry.register(FileRead())
     registry.register(GlobTool())
     registry.register(GrepTool())
-    registry.register(Bash())
     registry.register(ScanDirTool())
     registry.register(PlanAgentsTool())
     return registry
@@ -39,6 +40,7 @@ __all__ = [
     "BaseTool",
     "ToolRegistry",
     "ToolResult",
+    "READONLY_TOOL_NAMES",
     "FileRead",
     "FileEdit",
     "FileWrite",

@@ -1289,6 +1289,29 @@ Lessons from previous completed run:
 
 ## 十六、与现有代码的集成方案
 
+### RuntimeFacade：harness→runtime 边界接口
+
+`RuntimeFacade`（`src/mini_cc/runtime/facade.py`）是 harness 访问 runtime 能力的唯一入口。它封装了 `EngineContext`，对外只暴露 harness 需要的操作：
+
+| 方法 | 用途 |
+|------|------|
+| `dispatch_agent(request)` | 通过 AgentDispatcher 派发子 Agent |
+| `cancel_agents(ids)` | 取消指定或全部活跃 Agent |
+| `set_step_context(step_id)` | 设置/清除 AgentManager 的当前 Step 上下文 |
+| `drain_lifecycle_events()` | 消费 AgentEventBus 中的生命周期事件 |
+| `drain_completion(agent_id)` | 从 completion_queue 中取出指定 Agent 的完成事件 |
+| `agent_budget` (get/set) | 读写当前 Agent 预算 |
+| `prepare_query_state(state, mode)` | 准备 QueryState（构建 system prompt） |
+| `execution_scope(...)` | 设置 EngineContext 的 run_id / mode / budget 上下文 |
+| `submit_message(prompt, state)` | 提交消息到 QueryEngine |
+| `mode`, `model` | 当前执行模式和模型名称 |
+
+**依赖方向**：`harness` → `RuntimeFacade` → `EngineContext` → `runtime` 内部模块
+
+harness 不直接导入 `AgentManager`、`SubAgent`、`AgentDispatcher`、`AgentEventBus` 等 runtime 内部类。
+
+`SupervisorLoop` 不持有 `AgentEventBus` 引用，而是通过 `drain_lifecycle: Callable[[], list[AgentLifecycleEvent]]` 回调获取事件。这一回调在 `RunHarness` 构造时由 `RuntimeFacade.drain_lifecycle_events` 方法提供。
+
 ### QueryEngine
 
 保留不动，作为单 Step 的 Agent 执行器。Harness 不直接修改 QueryEngine 内部状态机。AgentEventBus 和 AgentBudget 是在 QueryEngine 之外的层注入的。
@@ -1308,8 +1331,10 @@ create_engine()
   └── AgentManager(lifecycle_bus=bus)
   └── EngineContext(lifecycle_bus=bus)
 
-RunHarness.create_default()
-  └── 复用 engine_ctx.lifecycle_bus
+RunHarness.create_default(engine_ctx=engine_ctx)
+  └── RuntimeFacade(engine_ctx)
+  └── StepRunner(runtime=facade)
+  └── SupervisorLoop(drain_lifecycle=facade.drain_lifecycle_events)
 ```
 
 这样 TUI / 默认聊天链路中的 `AgentTool` 派生 Agent 也能被 Harness 追踪到。
@@ -1448,7 +1473,7 @@ Step: MAKE_PLAN → Step: EDIT_CODE → Step: RUN_TESTS (失败)
 │                            SupervisorLoop                                     │
 │  ┌──────────┐  ┌──────────┐  ┌──────────────┐  ┌──────────┐  ┌───────────┐ │
 │  │PolicyEng.│  │ RunJudge │  │IterationOpt. │  │EventBus  │  │Checkpoint │ │
-│  │          │  │          │  │              │  │ drain()  │  │  Store    │ │
+│  │          │  │          │  │              │  │callable  │  │  Store    │ │
 │  └──────────┘  └──────────┘  └──────────────┘  └──────────┘  └───────────┘ │
 │                                                                               │
 │  ┌─────────────────────────────────────────────────────────────────────────┐ │
@@ -1459,15 +1484,16 @@ Step: MAKE_PLAN → Step: EDIT_CODE → Step: RUN_TESTS (失败)
                                    ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                              StepRunner                                       │
+│                     (通过 RuntimeFacade 访问 runtime)                          │
 │  ┌─────────────────┐  ┌──────────────┐  ┌─────────────────────────────────┐ │
 │  │ Query-backed    │  │ Bash-backed  │  │ Agent-backed                    │ │
-│  │ Step → Engine   │  │ Step → Bash  │  │ Step → AgentManager.create()    │ │
+│  │ Step → Engine   │  │ Step → Bash  │  │ Step → facade.dispatch_agent()  │ │
 │  └────────┬────────┘  └──────────────┘  └─────────────────────────────────┘ │
 └───────────┼──────────────────────────────────────────────────────────────────┘
             │
             ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                           EngineContext                                       │
+│                         RuntimeFacade                                         │
 │  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────────────────┐ │
 │  │ QueryEngine  │  │ AgentManager │  │ AgentBudget (per-step wallet)      │ │
 │  │              │  │              │  │                                    │ │

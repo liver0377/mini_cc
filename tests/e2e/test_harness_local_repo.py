@@ -458,14 +458,16 @@ class TestHarnessLocalRepoE2E:
             return
             yield
 
-        engine_ctx.engine = QueryEngine(
-            stream_fn=_slow_stream,
-            tool_use_ctx=ToolUseContext(
-                get_schemas=lambda: [],
-                execute=lambda tool_calls, config=None: _empty_tool_results(),
-                is_interrupted=lambda: engine_ctx.is_interrupted,
-            ),
-            model="test-model",
+        engine_ctx.replace_engine(
+            QueryEngine(
+                stream_fn=_slow_stream,
+                tool_use_ctx=ToolUseContext(
+                    get_schemas=lambda: [],
+                    execute=lambda tool_calls, config=None: _empty_tool_results(),
+                    is_interrupted=lambda: engine_ctx.is_interrupted,
+                ),
+                model="test-model",
+            )
         )
         store = CheckpointStore(base_dir=tmp_path / "runs")
         harness = RunHarness.create_default(engine_ctx=engine_ctx, store=store)

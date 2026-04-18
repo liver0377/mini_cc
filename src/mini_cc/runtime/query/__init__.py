@@ -1,19 +1,13 @@
 from __future__ import annotations
 
-from mini_cc.runtime.query.engine import (
-    CompactFn,
-    PostTurnHook,
-    QueryEngine,
-    ReplaceSummaryFn,
-    ShouldCompactFn,
-    StreamFn,
-)
+from mini_cc.runtime.query.agent_coordinator import AgentCompletionCoordinator
+from mini_cc.runtime.query.compaction import CompactionController
+from mini_cc.runtime.query.engine import PostTurnHook, QueryEngine, StreamFn
 
 __all__ = [
-    "CompactFn",
+    "AgentCompletionCoordinator",
+    "CompactionController",
     "PostTurnHook",
     "QueryEngine",
-    "ReplaceSummaryFn",
-    "ShouldCompactFn",
     "StreamFn",
 ]

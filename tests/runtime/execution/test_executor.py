@@ -5,7 +5,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from mini_cc.models import ToolCall
-from mini_cc.runtime.execution import StreamingToolExecutor
+from mini_cc.runtime.execution import ExecutionPolicy, StreamingToolExecutor
 from mini_cc.tools.base import BaseTool, ToolRegistry, ToolResult
 
 
@@ -210,3 +210,143 @@ class TestPreExecuteHook:
         assert results[0].success is True
         assert len(hook_calls) == 1
         assert hook_calls[0][0] == "bash"
+
+
+class TestExecutionPolicyIntegration:
+    async def test_readonly_policy_blocks_file_edit(self) -> None:
+        class _FileEditTool(BaseTool):
+            @property
+            def name(self) -> str:
+                return "file_edit"
+
+            @property
+            def description(self) -> str:
+                return "edit"
+
+            @property
+            def input_schema(self) -> type[BaseModel]:
+                return _SafeInput
+
+            def execute(self, **kwargs: Any) -> ToolResult:
+                return ToolResult(output="edited")
+
+        registry = _make_registry(_FileEditTool())
+        policy = ExecutionPolicy(readonly=True)
+        executor = StreamingToolExecutor(registry, policy=policy)
+        calls = [ToolCall(id="tc_1", name="file_edit", arguments='{"value":"test"}')]
+        results = [r async for r in executor.run(calls)]
+
+        assert len(results) == 1
+        assert results[0].success is False
+        assert "只读" in results[0].output
+
+    async def test_readonly_policy_blocks_file_write(self) -> None:
+        class _FileWriteTool(BaseTool):
+            @property
+            def name(self) -> str:
+                return "file_write"
+
+            @property
+            def description(self) -> str:
+                return "write"
+
+            @property
+            def input_schema(self) -> type[BaseModel]:
+                return _SafeInput
+
+            def execute(self, **kwargs: Any) -> ToolResult:
+                return ToolResult(output="written")
+
+        registry = _make_registry(_FileWriteTool())
+        policy = ExecutionPolicy(readonly=True)
+        executor = StreamingToolExecutor(registry, policy=policy)
+        calls = [ToolCall(id="tc_1", name="file_write", arguments='{"value":"test"}')]
+        results = [r async for r in executor.run(calls)]
+
+        assert len(results) == 1
+        assert results[0].success is False
+
+    async def test_scope_policy_blocks_out_of_scope_write(self) -> None:
+        class _FileEditTool(BaseTool):
+            @property
+            def name(self) -> str:
+                return "file_edit"
+
+            @property
+            def description(self) -> str:
+                return "edit"
+
+            @property
+            def input_schema(self) -> type[BaseModel]:
+                return _SafeInput
+
+            def execute(self, **kwargs: Any) -> ToolResult:
+                return ToolResult(output="edited")
+
+        registry = _make_registry(_FileEditTool())
+        policy = ExecutionPolicy(
+            scope_paths=["src"],
+            workspace_root="/project",
+        )
+        executor = StreamingToolExecutor(registry, policy=policy)
+        calls = [ToolCall(id="tc_1", name="file_edit", arguments='{"value":"test","file_path":"/project/tests/a.py"}')]
+        results = [r async for r in executor.run(calls)]
+
+        assert len(results) == 1
+        assert results[0].success is False
+        assert "scope" in results[0].output
+
+    async def test_scope_policy_allows_in_scope_write(self) -> None:
+        class _FileEditTool(BaseTool):
+            @property
+            def name(self) -> str:
+                return "file_edit"
+
+            @property
+            def description(self) -> str:
+                return "edit"
+
+            @property
+            def input_schema(self) -> type[BaseModel]:
+                return _SafeInput
+
+            def execute(self, **kwargs: Any) -> ToolResult:
+                return ToolResult(output="edited")
+
+        registry = _make_registry(_FileEditTool())
+        policy = ExecutionPolicy(
+            scope_paths=["src"],
+            workspace_root="/project",
+        )
+        executor = StreamingToolExecutor(registry, policy=policy)
+        calls = [ToolCall(id="tc_1", name="file_edit", arguments='{"value":"test","file_path":"/project/src/a.py"}')]
+        results = [r async for r in executor.run(calls)]
+
+        assert len(results) == 1
+        assert results[0].success is True
+
+    async def test_scope_policy_blocks_bash_when_scope_restricted(self) -> None:
+        registry = _make_registry(_UnsafeTool())
+        policy = ExecutionPolicy(
+            scope_paths=["src"],
+            workspace_root="/project",
+        )
+        executor = StreamingToolExecutor(registry, policy=policy)
+        calls = [ToolCall(id="tc_1", name="bash", arguments='{"value":"pytest","command":"pytest"}')]
+        results = [r async for r in executor.run(calls)]
+
+        assert len(results) == 1
+        assert results[0].success is False
+        assert "bash" in results[0].output
+
+    async def test_no_policy_allows_all(self) -> None:
+        registry = _make_registry(_SafeTool(), _UnsafeTool())
+        executor = StreamingToolExecutor(registry)
+        calls = [
+            ToolCall(id="tc_1", name="file_read", arguments='{"value":"a"}'),
+            ToolCall(id="tc_2", name="bash", arguments='{"value":"b"}'),
+        ]
+        results = [r async for r in executor.run(calls)]
+
+        assert len(results) == 2
+        assert all(r.success for r in results)

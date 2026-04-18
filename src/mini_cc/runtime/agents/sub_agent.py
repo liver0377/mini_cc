@@ -60,6 +60,7 @@ class SubAgent:
         self._cancel_event = asyncio.Event()
         self._collected_output: list[str] = []
         self._completed_version_stamp = config.base_version_stamp
+        self._background_task: asyncio.Task[None] | None = None
 
     @property
     def config(self) -> AgentConfig:
@@ -80,6 +81,14 @@ class SubAgent:
     @property
     def completed_version_stamp(self) -> str:
         return self._completed_version_stamp
+
+    @property
+    def background_task(self) -> asyncio.Task[None] | None:
+        return self._background_task
+
+    @background_task.setter
+    def background_task(self, value: asyncio.Task[None] | None) -> None:
+        self._background_task = value
 
     async def run(self, prompt: str) -> AsyncGenerator[Event, None]:
         self._status = AgentStatus.RUNNING
@@ -151,6 +160,13 @@ class SubAgent:
         output_text = "".join(self._collected_output)
         truncated = output_text[:500]
         termination_reason = "completed" if success else ("cancelled" if self._cancel_event.is_set() else "failed")
+
+        if not success and self.snapshot_svc is not None:
+            restored = self.snapshot_svc.restore_all()
+            if restored:
+                self._collected_output.append(f"\n\n[Agent 失败，已自动回滚以下文件: {', '.join(restored)}]")
+                output_text = "".join(self._collected_output)
+                truncated = output_text[:500]
 
         if success:
             self._status = AgentStatus.COMPLETED

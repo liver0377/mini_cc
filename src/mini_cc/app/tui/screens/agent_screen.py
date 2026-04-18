@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -10,7 +8,7 @@ from textual.widgets import Footer, Header, Static
 
 from mini_cc.app.tui.theme import DEFAULT_THEME
 from mini_cc.models import AgentStatus
-from mini_cc.runtime.agents import AgentManager, SubAgent
+from mini_cc.runtime import AgentView, RuntimeFacade
 
 _T = DEFAULT_THEME
 
@@ -87,10 +85,10 @@ class AgentScreen(Screen[None]):
         Binding("r", "refresh", "刷新", show=True),
     ]
 
-    def __init__(self, agent_manager: AgentManager) -> None:
+    def __init__(self, runtime: RuntimeFacade) -> None:
         super().__init__()
-        self._manager = agent_manager
-        self._agents: list[SubAgent] = []
+        self._runtime = runtime
+        self._agents: list[AgentView] = []
         self._selected_idx: int = -1
         self._detail_visible = False
 
@@ -141,12 +139,12 @@ class AgentScreen(Screen[None]):
             return
         agent = self._agents[self._selected_idx]
         if agent.status in (AgentStatus.RUNNING, AgentStatus.BACKGROUND_RUNNING, AgentStatus.CREATED):
-            agent.cancel()
+            self._runtime.cancel_agents([agent.agent_id])
             self._refresh_data()
             self._try_render()
 
     def _refresh_data(self) -> None:
-        self._agents = list(self._manager.agents.values())
+        self._agents = self._runtime.list_agents()
         if self._selected_idx >= len(self._agents):
             self._selected_idx = len(self._agents) - 1
         if not self._agents:
@@ -179,39 +177,33 @@ class AgentScreen(Screen[None]):
             icon = _STATUS_ICONS.get(agent.status, "?")
             color = _STATUS_COLORS.get(agent.status, "white")
             selected_marker = " [dim]◀[/]" if i == self._selected_idx else ""
-            prompt_preview = "(无消息)"
-            if agent.state.messages:
-                last_msg = agent.state.messages[-1]
-                if last_msg.content:
-                    prompt_preview = last_msg.content[:60]
             line = (
-                f"[{color}]{icon}[/] [bold #58a6ff]{agent.config.agent_id}[/]"
+                f"[{color}]{icon}[/] [bold #58a6ff]{agent.agent_id}[/]"
                 f"  [dim]Task #{agent.task_id}[/]"
                 f"  [{color}]{agent.status.value}[/]"
-                f"  [dim]{prompt_preview}[/]"
+                f"  [dim]{agent.prompt_preview}[/]"
                 f"{selected_marker}"
             )
             lines.append(line)
 
         list_widget.update("\n".join(lines))
 
-    def _show_detail(self, agent: SubAgent) -> None:
+    def _show_detail(self, agent: AgentView) -> None:
         detail = self.query_one("#detail-area", Static)
         self._detail_visible = True
         detail.set_class(True, "visible")
 
         output_text = self._read_agent_output(agent)
-        config = agent.config
 
         content_parts: list[str] = [
-            f"[bold #58a6ff]Agent {config.agent_id}[/]  [dim]Task #{agent.task_id}[/]",
+            f"[bold #58a6ff]Agent {agent.agent_id}[/]  [dim]Task #{agent.task_id}[/]",
             f"  状态: {_STATUS_ICONS.get(agent.status, '?')} {agent.status.value}",
-            f"  Workspace: {config.workspace_path}",
-            f"  Fork: {'是' if config.is_fork else '否'}",
-            f"  父 Agent: {config.parent_agent_id or '(无)'}",
-            f"  Scope: {', '.join(config.scope_paths) if config.scope_paths else '(未声明)'}",
-            f"  Base Version: {config.base_version_stamp or '(无)'}",
-            f"  消息数: {len(agent.state.messages)}",
+            f"  Workspace: {agent.workspace_path}",
+            f"  Fork: {'是' if agent.is_fork else '否'}",
+            f"  父 Agent: {agent.parent_agent_id or '(无)'}",
+            f"  Scope: {', '.join(agent.scope_paths) if agent.scope_paths else '(未声明)'}",
+            f"  Base Version: {agent.base_version_stamp or '(无)'}",
+            f"  消息数: {agent.message_count}",
         ]
 
         if output_text:
@@ -220,9 +212,5 @@ class AgentScreen(Screen[None]):
 
         detail.update("\n".join(content_parts))
 
-    def _read_agent_output(self, agent: SubAgent) -> str:
-        output_path = Path(f".mini_cc/tasks/{agent.config.agent_id}.output")
-        try:
-            return output_path.read_text(encoding="utf-8")
-        except (FileNotFoundError, OSError):
-            return ""
+    def _read_agent_output(self, agent: AgentView) -> str:
+        return self._runtime.read_agent_output(agent.agent_id)

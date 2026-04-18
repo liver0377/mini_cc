@@ -8,7 +8,7 @@ from typing import Any
 
 from mini_cc.features.memory.prompts import EXTRACTION_SYSTEM_PROMPT
 from mini_cc.features.memory.store import MemoryItem, list_memories, save_memory
-from mini_cc.models import Message, QueryState, Role, TextDelta
+from mini_cc.models import Message, MessageSource, QueryState, Role, TextDelta
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class MemoryExtractor:
         self._bg_tasks: set[asyncio.Task[None]] = set()
 
     def should_extract(self, state: QueryState) -> bool:
-        non_system = [m for m in state.messages if m.role != Role.SYSTEM]
+        non_system = [m for m in state.messages if _is_memory_relevant(m)]
         new_count = len(non_system) - self._last_extracted_count
         return new_count >= MIN_NEW_MESSAGES
 
@@ -45,7 +45,7 @@ class MemoryExtractor:
         return items
 
     def fire_and_forget(self, state: QueryState) -> None:
-        non_system = [m for m in state.messages if m.role != Role.SYSTEM]
+        non_system = [m for m in state.messages if _is_memory_relevant(m)]
         messages_snapshot = list(non_system)
 
         async def _bg() -> None:
@@ -54,7 +54,7 @@ class MemoryExtractor:
             except Exception:
                 logger.debug("Background memory extraction failed", exc_info=True)
             finally:
-                non_system_now = [m for m in state.messages if m.role != Role.SYSTEM]
+                non_system_now = [m for m in state.messages if _is_memory_relevant(m)]
                 self._last_extracted_count = len(non_system_now)
 
         task = asyncio.create_task(_bg())
@@ -76,7 +76,7 @@ async def _call_llm(
 def _format_recent_messages(messages: list[Message]) -> str:
     lines: list[str] = []
     for msg in messages:
-        if msg.role == Role.SYSTEM:
+        if not _is_memory_relevant(msg):
             continue
         role_label = msg.role.value
         content = msg.content or ""
@@ -84,6 +84,12 @@ def _format_recent_messages(messages: list[Message]) -> str:
             content = content[:500] + "..."
         lines.append(f"[{role_label}]: {content}")
     return "\n".join(lines)
+
+
+def _is_memory_relevant(message: Message) -> bool:
+    if message.role == Role.SYSTEM:
+        return False
+    return message.source in {MessageSource.USER, MessageSource.INTERNAL}
 
 
 def _build_extraction_prompt(

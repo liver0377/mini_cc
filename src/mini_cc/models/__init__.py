@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mini_cc.models.agent import AgentConfig, AgentId, AgentStatus, generate_agent_id
+from mini_cc.models.agent import AgentBudget, AgentConfig, AgentId, AgentStatus, generate_agent_id
 from mini_cc.models.events import (
     AgentCompletionEvent,
     AgentStartEvent,
@@ -17,11 +17,12 @@ from mini_cc.models.events import (
     ToolResultEvent,
     collect_tool_calls,
 )
-from mini_cc.models.message import Message, Role, ToolCall
+from mini_cc.models.message import Message, MessageSource, Role, ToolCall
 from mini_cc.models.query import QueryState, QueryTracking, ToolCallSummary, TurnRecord
 from mini_cc.models.task import Task, TaskStatus, TaskType
 
 __all__ = [
+    "AgentBudget",
     "AgentCompletionEvent",
     "AgentConfig",
     "AgentId",
@@ -34,6 +35,7 @@ __all__ = [
     "ContextLengthExceededError",
     "Event",
     "Message",
+    "MessageSource",
     "QueryState",
     "QueryTracking",
     "Role",

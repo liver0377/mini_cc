@@ -120,8 +120,8 @@ class TestCreateRegistries:
         assert "file_read" in names
         assert "glob" in names
         assert "grep" in names
-        assert "bash" in names
         assert "scan_dir" in names
         assert "plan_agents" in names
         assert "file_edit" not in names
         assert "file_write" not in names
+        assert "bash" not in names

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
 from typing import Any
 
+import httpx
 import openai
 
 from mini_cc.models import (
@@ -16,11 +18,29 @@ from mini_cc.models import (
     ToolCallStart,
 )
 
+logger = logging.getLogger(__name__)
+
+_DEFAULT_STREAM_TIMEOUT = httpx.Timeout(timeout=300.0, connect=10.0)
+_DEFAULT_MAX_RETRIES = 3
+
 
 class OpenAIProvider:
-    def __init__(self, model: str, base_url: str, api_key: str) -> None:
+    def __init__(
+        self,
+        model: str,
+        base_url: str,
+        api_key: str,
+        *,
+        max_retries: int = _DEFAULT_MAX_RETRIES,
+        timeout: httpx.Timeout | None = None,
+    ) -> None:
         self._model = model
-        self._client = openai.AsyncOpenAI(base_url=base_url, api_key=api_key)
+        self._client = openai.AsyncOpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            max_retries=max_retries,
+            timeout=timeout or _DEFAULT_STREAM_TIMEOUT,
+        )
 
     async def stream(
         self,
@@ -45,41 +65,47 @@ class OpenAIProvider:
                 raise ContextLengthExceededError(str(e)) from e
             raise
 
-        async for chunk in stream:
-            if not chunk.choices:
-                continue
+        try:
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
 
-            choice = chunk.choices[0]
-            delta = choice.delta
+                choice = chunk.choices[0]
+                delta = choice.delta
 
-            if delta.content:
-                yield TextDelta(content=delta.content)
+                if delta.content:
+                    yield TextDelta(content=delta.content)
 
-            if delta.tool_calls:
-                for tc_delta in delta.tool_calls:
-                    idx = tc_delta.index
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
 
-                    if idx not in tool_call_buffers:
-                        tool_call_buffers[idx] = {"id": tc_delta.id or "", "name": "", "arguments": ""}
+                        if idx not in tool_call_buffers:
+                            tool_call_buffers[idx] = {"id": tc_delta.id or "", "name": "", "arguments": ""}
 
-                    buf = tool_call_buffers[idx]
+                        buf = tool_call_buffers[idx]
 
-                    if tc_delta.id:
-                        buf["id"] = tc_delta.id
+                        if tc_delta.id:
+                            buf["id"] = tc_delta.id
 
-                    if tc_delta.function:
-                        if tc_delta.function.name:
-                            buf["name"] = tc_delta.function.name
-                            yield ToolCallStart(tool_call_id=buf["id"], name=buf["name"])
-                        if tc_delta.function.arguments:
-                            buf["arguments"] += tc_delta.function.arguments
-                            yield ToolCallDelta(
-                                tool_call_id=buf["id"],
-                                arguments_json_delta=tc_delta.function.arguments,
-                            )
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                buf["name"] = tc_delta.function.name
+                                yield ToolCallStart(tool_call_id=buf["id"], name=buf["name"])
+                            if tc_delta.function.arguments:
+                                buf["arguments"] += tc_delta.function.arguments
+                                yield ToolCallDelta(
+                                    tool_call_id=buf["id"],
+                                    arguments_json_delta=tc_delta.function.arguments,
+                                )
 
-                    if choice.finish_reason == "tool_calls":
-                        yield ToolCallEnd(tool_call_id=buf["id"])
+                        if choice.finish_reason == "tool_calls":
+                            yield ToolCallEnd(tool_call_id=buf["id"])
+        except GeneratorExit:
+            await stream.close()
+        except Exception:
+            await stream.close()
+            raise
 
 
 def _convert_message(msg: Message) -> dict[str, Any]:

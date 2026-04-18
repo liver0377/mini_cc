@@ -6,12 +6,13 @@ from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
 from mini_cc.models import ToolCall, ToolResultEvent
+from mini_cc.runtime.execution.policy import ExecutionPolicy
+from mini_cc.tools import READONLY_TOOL_NAMES
 from mini_cc.tools.base import BaseTool
-
-_SAFE_TOOL_NAMES = {"file_read", "glob", "grep", "scan_dir", "plan_agents"}
 
 PreExecuteHook = Callable[[str, dict[str, Any]], None]
 IsInterruptedFn = Callable[[], bool]
+_DEFAULT_TOOL_TIMEOUT = 300.0
 
 
 class StreamingToolExecutor:
@@ -20,10 +21,14 @@ class StreamingToolExecutor:
         tool_registry: Any,
         pre_execute_hook: PreExecuteHook | None = None,
         is_interrupted: IsInterruptedFn | None = None,
+        policy: ExecutionPolicy | None = None,
+        tool_timeout: float = _DEFAULT_TOOL_TIMEOUT,
     ) -> None:
         self._registry = tool_registry
         self._pre_execute_hook = pre_execute_hook
         self._is_interrupted = is_interrupted or (lambda: False)
+        self._policy = policy
+        self._tool_timeout = tool_timeout
 
     async def run(self, tool_calls: list[ToolCall]) -> AsyncGenerator[ToolResultEvent, None]:
         safe_tasks: list[tuple[ToolCall, BaseTool, dict[str, Any]]] = []
@@ -51,6 +56,17 @@ class StreamingToolExecutor:
                 )
                 continue
 
+            if self._policy is not None:
+                allowed, reason = self._policy.validate_tool_call(tool.name, kwargs)
+                if not allowed:
+                    yield ToolResultEvent(
+                        tool_call_id=tc.id,
+                        name=tool.name,
+                        output=reason,
+                        success=False,
+                    )
+                    continue
+
             entry = (tc, tool, kwargs)
             if _is_concurrency_safe(tool):
                 safe_tasks.append(entry)
@@ -71,7 +87,15 @@ class StreamingToolExecutor:
         call_kwargs = dict(kwargs)
         if tool.name == "bash":
             call_kwargs["_is_interrupted"] = self._is_interrupted
-        result = await tool.async_execute(**call_kwargs)
+        try:
+            result = await asyncio.wait_for(tool.async_execute(**call_kwargs), timeout=self._tool_timeout)
+        except TimeoutError:
+            return ToolResultEvent(
+                tool_call_id=tc.id,
+                name=tool.name,
+                output=f"工具执行超时 ({self._tool_timeout}s)",
+                success=False,
+            )
         return ToolResultEvent(
             tool_call_id=tc.id,
             name=tool.name,
@@ -81,4 +105,4 @@ class StreamingToolExecutor:
 
 
 def _is_concurrency_safe(tool: BaseTool) -> bool:
-    return tool.name in _SAFE_TOOL_NAMES
+    return tool.name in READONLY_TOOL_NAMES
