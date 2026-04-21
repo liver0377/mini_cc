@@ -40,7 +40,7 @@ uv.lock
 .env
 
 # eval
-scripts/
+# scripts/
 results/
 logs/
 
