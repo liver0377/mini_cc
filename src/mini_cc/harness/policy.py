@@ -56,14 +56,14 @@ class PolicyEngine:
             return PolicyDecision(
                 action=PolicyAction.BLOCK,
                 reason="active agent limit exceeded",
-                terminal_status=RunStatus.BLOCKED,
+                terminal_status=RunStatus.FAILED,
             )
 
         if run_state.active_write_agent_count > 1:
             return PolicyDecision(
                 action=PolicyAction.BLOCK,
                 reason="multiple active write agents are not allowed",
-                terminal_status=RunStatus.BLOCKED,
+                terminal_status=RunStatus.FAILED,
             )
 
         return None
@@ -96,7 +96,7 @@ class PolicyEngine:
                 return PolicyDecision(
                     action=PolicyAction.FAIL,
                     reason="provider remained unavailable after repeated cooldowns",
-                    terminal_status=RunStatus.WAITING_HUMAN,
+                    terminal_status=RunStatus.FAILED,
                 )
             cooldown_seconds = self._provider_cooldown_seconds(run_state.provider_cooldown_count)
             return PolicyDecision(
@@ -116,7 +116,7 @@ class PolicyEngine:
                 return PolicyDecision(
                     action=PolicyAction.BLOCK,
                     reason="run is blocked by repeated step timeouts",
-                    terminal_status=RunStatus.BLOCKED,
+                    terminal_status=RunStatus.FAILED,
                 )
 
             if step.kind in {StepKind.RUN_TESTS, StepKind.INSPECT_FAILURES, StepKind.RUN_TASK_AUDIT}:
@@ -183,7 +183,7 @@ class PolicyEngine:
             return PolicyDecision(
                 action=PolicyAction.BLOCK,
                 reason="run is blocked by repeated failures",
-                terminal_status=RunStatus.BLOCKED,
+                terminal_status=RunStatus.FAILED,
             )
 
         return PolicyDecision(

@@ -20,6 +20,7 @@ from mini_cc.harness.models import (
     deadline_after,
     utc_now_iso,
 )
+from mini_cc.harness.normalization import normalize_step_work_items
 from mini_cc.harness.policy import PolicyEngine
 from mini_cc.harness.step_runner import QueryEventSink, StepRunner
 from mini_cc.harness.supervisor import HarnessEventSink, SupervisorLoop
@@ -200,7 +201,7 @@ class RunHarness:
             copied = step.model_copy(deep=True)
             if not copied.id:
                 copied.id = f"step-{index:04d}"
-            normalized.append(copied)
+            normalized.append(normalize_step_work_items(copied))
         return normalized
 
     def _invalidate_inflight_agents(self, run_state: RunState) -> list[str]:
@@ -267,4 +268,5 @@ class RunHarness:
             if s.status == StepStatus.PENDING:
                 insert_at = i
                 break
+        normalize_step_work_items(resume_step)
         run_state.steps.insert(insert_at, resume_step)

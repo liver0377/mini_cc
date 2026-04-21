@@ -28,6 +28,7 @@ from mini_cc.harness.models import (
     deadline_after,
     utc_now_iso,
 )
+from mini_cc.harness.normalization import normalize_step_work_items, normalize_steps_work_items
 from mini_cc.harness.policy import PolicyAction, PolicyDecision, PolicyEngine
 from mini_cc.harness.scheduler import BatchSchedulingDecision, Scheduler
 from mini_cc.harness.step_runner import StepRunner
@@ -68,6 +69,7 @@ class SupervisorLoop:
         *,
         interrupt_event: threading.Event | None,
     ) -> RunState:
+        run_state.steps = normalize_steps_work_items(run_state.steps)
         if run_state.started_at is None:
             run_state.started_at = run_state.created_at
         if run_state.status == RunStatus.CREATED:
@@ -143,29 +145,23 @@ class SupervisorLoop:
 
             step.status = StepStatus.IN_PROGRESS
             run_state.current_step_id = step.id
-            run_state.current_work_item_id = work_item.id if work_item is not None else None
+            run_state.current_work_item_id = work_item.id
             execution_started_at = utc_now_iso()
-            if work_item is not None:
-                work_item.status = WorkItemStatus.IN_PROGRESS
-                step.sync_work_item(work_item)
-                run_state.phase = work_item.kind
-            else:
-                run_state.phase = step.kind.value
+            work_item.status = WorkItemStatus.IN_PROGRESS
+            step.sync_work_item(work_item)
+            run_state.phase = work_item.kind
             run_state.sync_step(step)
             run_state.touch()
             self._store.append_scheduler_decision(
                 SchedulerDecisionRecord(
                     run_id=run_state.run_id,
                     step_id=step.id,
-                    work_item_id=work_item.id if work_item is not None else None,
+                    work_item_id=work_item.id,
                     selected_role=scheduling_decision.selected.role,
                     selected_priority=scheduling_decision.selected.priority,
                     considered_count=scheduling_decision.considered_count,
                     reason=scheduling_decision.reason,
-                    rejected_targets=[
-                        rejected.work_item.id if rejected.work_item is not None else rejected.step.id
-                        for rejected in scheduling_decision.rejected
-                    ],
+                    rejected_targets=[rejected.work_item.id for rejected in scheduling_decision.rejected],
                     rejected_reasons=[rejected.reason for rejected in scheduling_decision.rejected],
                 )
             )
@@ -174,11 +170,11 @@ class SupervisorLoop:
                     event_type="step_started",
                     run_id=run_state.run_id,
                     step_id=step.id,
-                    message=work_item.title if work_item is not None else step.title,
+                    message=work_item.title,
                     data={
                         "kind": step.kind.value,
-                        "work_item_id": work_item.id if work_item is not None else "",
-                        "work_item_kind": work_item.kind if work_item is not None else "",
+                        "work_item_id": work_item.id,
+                        "work_item_kind": work_item.kind,
                         "active_agents": str(run_state.active_agent_count),
                         "failure_count": str(run_state.failure_count),
                         "no_progress_count": str(run_state.consecutive_no_progress_count),
@@ -186,8 +182,7 @@ class SupervisorLoop:
                         "scheduler_reason": scheduling_decision.reason,
                         "scheduler_considered": str(scheduling_decision.considered_count),
                         "scheduler_rejected": ",".join(
-                            (rejected.work_item.id if rejected.work_item is not None else rejected.step.id)
-                            for rejected in scheduling_decision.rejected[:3]
+                            rejected.work_item.id for rejected in scheduling_decision.rejected[:3]
                         ),
                     },
                 ),
@@ -198,12 +193,7 @@ class SupervisorLoop:
             self._set_step_context(step)
             self._step_runner.set_interrupt_event(interrupt_event)
             try:
-                if work_item is not None:
-                    result = await self._step_runner.run_work_item(step, work_item, run_state)
-                elif step.has_work_items and step.has_terminal_work_item_failure():
-                    result = self._failed_work_item_result(step)
-                else:
-                    result = await self._step_runner.run_step(step, run_state)
+                result = await self._step_runner.run_work_item(step, work_item, run_state)
             except Exception as err:
                 result = StepResult(
                     success=False,
@@ -232,15 +222,14 @@ class SupervisorLoop:
         self,
         run_state: RunState,
         step: Step,
-        work_item: WorkItem | None,
+        work_item: WorkItem,
         result: StepResult,
     ) -> None:
         step.error = result.error or "run cancelled during step execution"
         step.status = StepStatus.FAILED_TERMINAL
-        if work_item is not None:
-            work_item.error = step.error
-            work_item.status = WorkItemStatus.FAILED_TERMINAL
-            step.sync_work_item(work_item)
+        work_item.error = step.error
+        work_item.status = WorkItemStatus.FAILED_TERMINAL
+        step.sync_work_item(work_item)
         run_state.sync_step(step)
         run_state.status = RunStatus.CANCELLED
         run_state.phase = "cancelled"
@@ -259,8 +248,6 @@ class SupervisorLoop:
         for candidate in batch_decision.candidates:
             step = candidate.step
             work_item = candidate.work_item
-            if work_item is None:
-                continue
             step.status = StepStatus.IN_PROGRESS
             work_item.status = WorkItemStatus.IN_PROGRESS
             step.sync_work_item(work_item)
@@ -284,7 +271,9 @@ class SupervisorLoop:
                 self._step_runner.set_interrupt_event(None)
                 self._clear_step_context()
 
-            if not result.success:
+            is_sync = result.metadata.get("dispatch_mode") == "sync_fallback"
+
+            if not result.success and not is_sync:
                 work_item.status = WorkItemStatus.PENDING
                 step.sync_work_item(work_item)
                 run_state.sync_step(step)
@@ -303,8 +292,6 @@ class SupervisorLoop:
                     rejected_reasons=[],
                 )
             )
-            is_sync = result.metadata.get("dispatch_mode") == "sync_fallback"
-
             if is_sync:
                 sync_results.append((step, work_item, result, execution_started_at))
             else:
@@ -439,27 +426,21 @@ class SupervisorLoop:
         self,
         run_state: RunState,
         step: Step,
-        work_item: WorkItem | None,
+        work_item: WorkItem,
         result: StepResult,
         execution_started_at: str,
     ) -> None:
-        artifact_owner = work_item.id if work_item is not None else step.id
+        artifact_owner = work_item.id
         artifact_paths = self._save_artifacts(run_state, step, result.artifacts, artifact_owner=artifact_owner)
         previous_snapshot = self._store.latest_iteration_snapshot(run_state.run_id)
-        if work_item is not None:
-            work_item.summary = result.summary
-            work_item.error = result.error
-            work_item.artifacts.update(artifact_paths)
-            work_item.metadata.update(result.metadata)
-            step.sync_work_item(work_item)
-            step.summary = self._summarize_step_work_items(step)
-            step.error = result.error
-            step.artifacts.update(artifact_paths)
-        else:
-            step.summary = result.summary
-            step.evaluation = result.summary
-            step.error = result.error
-            step.artifacts.update(artifact_paths)
+        work_item.summary = result.summary
+        work_item.error = result.error
+        work_item.artifacts.update(artifact_paths)
+        work_item.metadata.update(result.metadata)
+        step.sync_work_item(work_item)
+        step.summary = self._summarize_step_work_items(step)
+        step.error = result.error
+        step.artifacts.update(artifact_paths)
         run_state.artifacts.update(artifact_paths)
         run_state.latest_summary = result.summary
         if result.query_state is not None:
@@ -469,7 +450,7 @@ class SupervisorLoop:
         self._update_work_item_status(run_state, step, work_item, result)
         self._update_failure_tracking(run_state, result)
 
-        if work_item is not None and result.success and step.pending_work_items():
+        if result.success and step.pending_work_items():
             self._append_trace_spans(
                 run_state,
                 result.trace_spans,
@@ -523,13 +504,13 @@ class SupervisorLoop:
         self,
         run_state: RunState,
         step: Step,
-        work_item: WorkItem | None,
+        work_item: WorkItem,
         result: StepResult,
         execution_started_at: str,
         artifact_paths: dict[str, str],
         previous_snapshot: IterationSnapshot | None,
     ) -> None:
-        final_result = result if work_item is None else self._finalize_step_result(step, result)
+        final_result = self._finalize_step_result(step, result)
         self._append_trace_spans(
             run_state,
             final_result.trace_spans,
@@ -578,8 +559,8 @@ class SupervisorLoop:
                     "health": health.value,
                     "decision": decision.action.value,
                     "decision_reason": decision.reason,
-                    "work_item_id": work_item.id if work_item is not None else "",
-                    "work_item_kind": work_item.kind if work_item is not None else "",
+                    "work_item_id": work_item.id,
+                    "work_item_kind": work_item.kind,
                     "active_agents": str(run_state.active_agent_count),
                     "failure_count": str(run_state.failure_count),
                     "no_progress_count": str(run_state.consecutive_no_progress_count),
@@ -613,11 +594,9 @@ class SupervisorLoop:
         self,
         run_state: RunState,
         step: Step,
-        work_item: WorkItem | None,
+        work_item: WorkItem,
         result: StepResult,
     ) -> None:
-        if work_item is None:
-            return
         if result.success:
             work_item.status = WorkItemStatus.SUCCEEDED
         elif result.retryable and work_item.retry_count < run_state.retry_policy.max_step_retries:
@@ -718,7 +697,7 @@ class SupervisorLoop:
         *,
         run_state: RunState,
         step: Step,
-        work_item: WorkItem | None,
+        work_item: WorkItem,
         started_at: str,
         status: str,
         summary: str,
@@ -727,32 +706,17 @@ class SupervisorLoop:
         start_dt = datetime.fromisoformat(started_at)
         end_dt = datetime.fromisoformat(ended_at)
         return TraceSpan(
-            span_id=f"{step.id}-{work_item.id if work_item is not None else 'step'}",
+            span_id=f"{step.id}-{work_item.id}",
             run_id=run_state.run_id,
             step_id=step.id,
-            work_item_id=work_item.id if work_item is not None else None,
-            kind="work_item" if work_item is not None else "step",
-            name=work_item.kind if work_item is not None else step.kind.value,
+            work_item_id=work_item.id,
+            kind="work_item",
+            name=work_item.kind,
             status=status,
             start_at=started_at,
             end_at=ended_at,
             duration_ms=max(0, int((end_dt - start_dt).total_seconds() * 1000)),
             summary=summary[:200],
-        )
-
-    def _failed_work_item_result(self, step: Step) -> StepResult:
-        failed = next(
-            item
-            for item in step.work_items
-            if item.status in {WorkItemStatus.FAILED_TERMINAL, WorkItemStatus.FAILED_RETRYABLE}
-        )
-        return StepResult(
-            success=False,
-            summary=self._summarize_step_work_items(step),
-            retryable=False,
-            error=failed.error,
-            progress_made=bool(failed.summary.strip()),
-            metadata=failed.metadata,
         )
 
     def _apply_step_decision(
@@ -794,8 +758,8 @@ class SupervisorLoop:
             step.status = StepStatus.FAILED_TERMINAL
             if step.id not in run_state.failed_step_ids:
                 run_state.failed_step_ids.append(step.id)
-            run_state.status = RunStatus.BLOCKED
-            run_state.phase = "blocked"
+            run_state.status = decision.terminal_status or RunStatus.FAILED
+            run_state.phase = run_state.status.value
         elif decision.action == PolicyAction.FAIL:
             step.status = StepStatus.FAILED_TERMINAL
             if step.id not in run_state.failed_step_ids:
@@ -811,6 +775,8 @@ class SupervisorLoop:
     def _apply_terminal_decision(self, run_state: RunState, decision: PolicyDecision) -> None:
         if decision.terminal_status is not None:
             run_state.status = decision.terminal_status
+        elif decision.action == PolicyAction.BLOCK:
+            run_state.status = RunStatus.FAILED
         if decision.action == PolicyAction.TIME_OUT:
             run_state.phase = "timed_out"
             event_type = "run_timed_out"
@@ -861,7 +827,7 @@ class SupervisorLoop:
         for step in steps:
             if not step.id:
                 step.id = f"step-{secrets.token_hex(4)}"
-            normalized.append(step)
+            normalized.append(normalize_step_work_items(step))
         run_state.steps[insert_at:insert_at] = normalized
 
     def _set_step_context(self, step: Step) -> None:

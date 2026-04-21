@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from mini_cc.harness.dispatch_roles import role_for_step
-from mini_cc.harness.models import RunState, Step, StepKind, StepStatus, WorkItem
+from mini_cc.harness.models import RunState, Step, StepKind, StepStatus, WorkItem, WorkItemStatus
+from mini_cc.harness.normalization import DEFAULT_WORK_ITEM_METADATA, normalize_steps_work_items
 
 _READONLY_ROLES = frozenset({"analyzer", "planner", "reporter", "verifier"})
 
@@ -19,7 +19,7 @@ _ROLE_PRIORITY: dict[str, int] = {
 @dataclass(frozen=True)
 class ExecutionCandidate:
     step: Step
-    work_item: WorkItem | None
+    work_item: WorkItem
     role: str
     priority: int
     step_index: int
@@ -29,7 +29,7 @@ class ExecutionCandidate:
 @dataclass(frozen=True)
 class RejectedCandidate:
     step: Step
-    work_item: WorkItem | None
+    work_item: WorkItem
     role: str
     reason: str
 
@@ -52,64 +52,22 @@ class BatchSchedulingDecision:
 
 class Scheduler:
     def decide(self, run_state: RunState) -> SchedulingDecision | None:
+        run_state.steps = normalize_steps_work_items(run_state.steps)
         ready_steps = run_state.ready_steps()
         if not ready_steps:
             return None
         candidates: list[ExecutionCandidate] = []
         rejected: list[RejectedCandidate] = []
         for step_index, step in enumerate(ready_steps):
-            if step.has_work_items:
-                ready_items = step.ready_work_items()
-                for item_index, ready_item in enumerate(ready_items):
-                    role = ready_item.role
-                    allowed, rejected_reason = self._candidate_allowed(run_state, step, ready_item, role)
-                    if not allowed:
-                        rejected.append(
-                            RejectedCandidate(
-                                step=step,
-                                work_item=ready_item,
-                                role=role,
-                                reason=rejected_reason,
-                            )
-                        )
-                        continue
-                    candidates.append(
-                        ExecutionCandidate(
-                            step=step,
-                            work_item=ready_item,
-                            role=role,
-                            priority=self._candidate_priority(
-                                run_state,
-                                step,
-                                ready_item,
-                                role,
-                                step_index,
-                                item_index,
-                            ),
-                            step_index=step_index,
-                            item_index=item_index,
-                        )
-                    )
-                if step.has_terminal_work_item_failure():
-                    role = role_for_step(step.kind)
-                    candidates.append(
-                        ExecutionCandidate(
-                            step=step,
-                            work_item=None,
-                            role=role,
-                            priority=self._candidate_priority(run_state, step, None, role, step_index, 0),
-                            step_index=step_index,
-                            item_index=0,
-                        )
-                    )
-            else:
-                role = role_for_step(step.kind)
-                allowed, rejected_reason = self._candidate_allowed(run_state, step, None, role)
+            ready_items = step.ready_work_items()
+            for item_index, ready_item in enumerate(ready_items):
+                role = ready_item.role
+                allowed, rejected_reason = self._candidate_allowed(run_state, step, ready_item, role)
                 if not allowed:
                     rejected.append(
                         RejectedCandidate(
                             step=step,
-                            work_item=None,
+                            work_item=ready_item,
                             role=role,
                             reason=rejected_reason,
                         )
@@ -118,11 +76,18 @@ class Scheduler:
                 candidates.append(
                     ExecutionCandidate(
                         step=step,
-                        work_item=None,
+                        work_item=ready_item,
                         role=role,
-                        priority=self._candidate_priority(run_state, step, None, role, step_index, 0),
+                        priority=self._candidate_priority(
+                            run_state,
+                            step,
+                            ready_item,
+                            role,
+                            step_index,
+                            item_index,
+                        ),
                         step_index=step_index,
-                        item_index=0,
+                        item_index=item_index,
                     )
                 )
         if not candidates:
@@ -140,6 +105,7 @@ class Scheduler:
         )
 
     def decide_readonly_batch(self, run_state: RunState) -> BatchSchedulingDecision | None:
+        run_state.steps = normalize_steps_work_items(run_state.steps)
         remaining_capacity = run_state.budget.max_active_agents - run_state.active_readonly_agent_count
         if remaining_capacity <= 0:
             return None
@@ -151,47 +117,46 @@ class Scheduler:
         non_readonly_candidates: list[ExecutionCandidate] = []
         rejected: list[RejectedCandidate] = []
         for step_index, step in enumerate(ready_steps):
-            if step.has_work_items:
-                ready_items = step.ready_work_items()
-                for item_index, ready_item in enumerate(ready_items):
-                    role = ready_item.role
-                    if role in _READONLY_ROLES:
-                        allowed, rejected_reason = self._candidate_allowed(run_state, step, ready_item, role)
-                        if not allowed:
-                            rejected.append(
-                                RejectedCandidate(
-                                    step=step,
-                                    work_item=ready_item,
-                                    role=role,
-                                    reason=rejected_reason,
-                                )
-                            )
-                            continue
-                        readonly_candidates.append(
-                            ExecutionCandidate(
+            ready_items = step.ready_work_items()
+            for item_index, ready_item in enumerate(ready_items):
+                role = ready_item.role
+                if role in _READONLY_ROLES and ready_item.metadata.get(DEFAULT_WORK_ITEM_METADATA) != "true":
+                    allowed, rejected_reason = self._candidate_allowed(run_state, step, ready_item, role)
+                    if not allowed:
+                        rejected.append(
+                            RejectedCandidate(
                                 step=step,
                                 work_item=ready_item,
                                 role=role,
-                                priority=self._candidate_priority(
-                                    run_state, step, ready_item, role, step_index, item_index
-                                ),
-                                step_index=step_index,
-                                item_index=item_index,
+                                reason=rejected_reason,
                             )
                         )
-                    else:
-                        non_readonly_candidates.append(
-                            ExecutionCandidate(
-                                step=step,
-                                work_item=ready_item,
-                                role=role,
-                                priority=self._candidate_priority(
-                                    run_state, step, ready_item, role, step_index, item_index
-                                ),
-                                step_index=step_index,
-                                item_index=item_index,
-                            )
+                        continue
+                    readonly_candidates.append(
+                        ExecutionCandidate(
+                            step=step,
+                            work_item=ready_item,
+                            role=role,
+                            priority=self._candidate_priority(
+                                run_state, step, ready_item, role, step_index, item_index
+                            ),
+                            step_index=step_index,
+                            item_index=item_index,
                         )
+                    )
+                else:
+                    non_readonly_candidates.append(
+                        ExecutionCandidate(
+                            step=step,
+                            work_item=ready_item,
+                            role=role,
+                            priority=self._candidate_priority(
+                                run_state, step, ready_item, role, step_index, item_index
+                            ),
+                            step_index=step_index,
+                            item_index=item_index,
+                        )
+                    )
 
         if not readonly_candidates:
             return None
@@ -209,7 +174,7 @@ class Scheduler:
             rejected=rejected,
         )
 
-    def select_next_execution(self, run_state: RunState) -> tuple[Step, WorkItem | None] | None:
+    def select_next_execution(self, run_state: RunState) -> tuple[Step, WorkItem] | None:
         decision = self.decide(run_state)
         if decision is None:
             return None
@@ -219,7 +184,7 @@ class Scheduler:
         self,
         run_state: RunState,
         step: Step,
-        work_item: WorkItem | None,
+        work_item: WorkItem,
         role: str,
         step_index: int,
         item_index: int,
@@ -229,7 +194,7 @@ class Scheduler:
         base = _ROLE_PRIORITY.get(role, 0)
         if role == "verifier" and self._has_prior_pending_implementer(run_state, step.id):
             base -= 100
-        retry_penalty = (work_item.retry_count if work_item is not None else step.retry_count) * 5
+        retry_penalty = work_item.retry_count * 5
         aging_bonus = max(0, 10 - step_index) + max(0, 5 - item_index)
         return base + aging_bonus - retry_penalty
 
@@ -237,7 +202,7 @@ class Scheduler:
         self,
         run_state: RunState,
         step: Step,
-        work_item: WorkItem | None,
+        work_item: WorkItem,
         role: str,
     ) -> tuple[bool, str]:
         del work_item
@@ -257,15 +222,13 @@ class Scheduler:
                 return False
             if step.status not in {StepStatus.PENDING, StepStatus.IN_PROGRESS}:
                 continue
-            if role_for_step(step.kind) == "implementer":
+            if any(item.role == "implementer" and item.status != WorkItemStatus.SUCCEEDED for item in step.work_items):
                 return True
         return False
 
     def _decision_reason(self, selected: ExecutionCandidate, rejected: list[RejectedCandidate]) -> str:
-        target = selected.work_item.id if selected.work_item is not None else selected.step.id
-        reason = f"selected {target} as highest-priority {selected.role} candidate"
+        reason = f"selected {selected.work_item.id} as highest-priority {selected.role} candidate"
         if rejected:
             top_rejected = rejected[0]
-            rejected_target = top_rejected.work_item.id if top_rejected.work_item is not None else top_rejected.step.id
-            reason += f"; rejected {rejected_target} because {top_rejected.reason}"
+            reason += f"; rejected {top_rejected.work_item.id} because {top_rejected.reason}"
         return reason

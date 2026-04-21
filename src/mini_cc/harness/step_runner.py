@@ -13,6 +13,7 @@ from typing import Any
 from mini_cc.harness.diagnostics import QueryDiagnostics
 from mini_cc.harness.dispatch_roles import role_for_step
 from mini_cc.harness.models import FailureClass, RunState, Step, StepKind, StepResult, TraceSpan, WorkItem
+from mini_cc.harness.normalization import DEFAULT_WORK_ITEM_METADATA
 from mini_cc.models import (
     AgentCompletionEvent,
     AgentStartEvent,
@@ -189,6 +190,13 @@ class StepRunner:
         return StepResult(success=False, summary="", retryable=False, error=f"Unsupported step kind: {step.kind}")
 
     async def _run_work_item_inner(self, step: Step, work_item: WorkItem, run_state: RunState) -> StepResult:
+        if work_item.metadata.get(DEFAULT_WORK_ITEM_METADATA) == "true":
+            result = await self._run_step_inner(step, run_state)
+            result.metadata.setdefault("work_item_id", work_item.id)
+            result.metadata.setdefault("work_item_kind", work_item.kind)
+            result.metadata.setdefault(DEFAULT_WORK_ITEM_METADATA, "true")
+            return result
+
         readonly = work_item.role in {"analyzer", "planner", "reporter", "verifier"}
         mode = "plan" if readonly else "build"
         parent_state = run_state.latest_query_state if readonly else None
