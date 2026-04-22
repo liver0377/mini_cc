@@ -22,6 +22,7 @@ from mini_cc.harness.models import RunState, Step, StepKind
 from mini_cc.harness.runner import RunHarness
 from mini_cc.models import (
     AgentCompletionEvent,
+    AgentHeartbeatEvent,
     AgentStartEvent,
     AgentToolCallEvent,
     AgentToolResultEvent,
@@ -380,6 +381,8 @@ class ChatScreen(Screen[None]):
             await chat.add_agent_tool_call(event.agent_id, event.tool_name)
         elif isinstance(event, AgentToolResultEvent):
             await chat.add_agent_tool_result(event.agent_id, event.tool_name, event.success, event.output_preview)
+        elif isinstance(event, AgentHeartbeatEvent):
+            await chat.add_agent_heartbeat(event.agent_id, event.elapsed_seconds, event.status)
         elif isinstance(event, AgentCompletionEvent):
             await chat.end_assistant_message()
             await chat.add_agent_notification(

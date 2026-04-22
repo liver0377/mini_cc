@@ -19,6 +19,9 @@ class AgentLifecycleEvent:
     base_version_stamp: str = ""
     completed_version_stamp: str = ""
     termination_reason: str | None = None
+    heartbeat_at: str | None = None
+    heartbeat_elapsed_seconds: int | None = None
+    heartbeat_status: str = ""
 
 
 class AgentEventBus:

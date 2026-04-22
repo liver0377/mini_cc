@@ -138,6 +138,9 @@ class AgentTrace(BaseModel):
     base_version_stamp: str = ""
     completed_version_stamp: str = ""
     invalidated_on_resume: bool = False
+    last_heartbeat_at: str | None = None
+    heartbeat_count: int = 0
+    last_heartbeat_status: str = ""
 
 
 class RunBudget(BaseModel):

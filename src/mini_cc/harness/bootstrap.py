@@ -175,96 +175,141 @@ def _should_ignore_entry(path: Path) -> bool:
 
 def _bootstrap_work_items(user_text: str, bootstrap_prompt: str, profile: TaskAuditProfile | None) -> list[WorkItem]:
     bootstrap_hint = profile.bootstrap_guidance if profile is not None else ""
+    inspect_prompt = (
+        "只做仓库骨架检查，不要分析实现方案。\n"
+        "请检查并输出最多 10 行 checklist，每行格式为 `path: yes/no - 说明`。\n"
+        "必须检查：pyproject.toml、src/、tests/、可执行入口配置、基础测试、task audit 脚本。"
+        "如果文件已存在，只标记可复用；不要展开文件内容。\n\n"
+        f"用户目标：{user_text}\n"
+        f"{bootstrap_hint}"
+    )
+    detect_prompt = (
+        "基于前序 checklist 做最终骨架判定，不要重新分析整个仓库。\n"
+        "只输出以下 4 项，最多 8 行：\n"
+        "scaffold_ready: true/false\n"
+        "reusable: 逗号分隔的可复用文件\n"
+        "missing: 逗号分隔的缺失文件；没有则写 none\n"
+        "next_action: write_missing_files 或 proceed_to_implementation\n\n"
+        f"用户目标：{user_text}"
+    )
     generate_prompt = (
-        "基于前置分析结果，直接生成项目骨架的完整实现方案。"
-        "不要重复已有分析，直接产出具体的文件内容、目录结构和实现计划。\n\n"
+        "基于前序骨架判定，只生成缺失文件清单和每个文件的验收标准。"
+        "不要重复分析仓库，不要设计完整实现方案，不要输出长篇解释。"
+        "如果 scaffold_ready=true，只输出 `no scaffold changes needed`。\n\n"
         f"用户目标：{user_text}\n"
         f"{bootstrap_hint}"
     )
     write_prompt = (
-        "基于前置生成的骨架方案，将所有文件写入磁盘。"
-        "确保入口可执行、测试可运行、依赖正确安装。\n\n"
+        "只创建或修复前序判定中缺失的骨架文件。"
+        "不要覆盖已经存在且可复用的文件。"
+        "完成后用最多 8 行列出实际写入/确认的文件。\n\n"
         f"用户目标：{user_text}"
     )
     verify_prompt = (
-        "复核 bootstrap 结果：验证目录结构完整、入口可执行、测试可运行。"
-        "指出剩余风险和后续实现重点。\n\n"
+        "只复核 bootstrap 是否满足进入实现阶段的最小前提。"
+        "输出最多 8 行：ready: true/false、missing、entrypoint、tests、next_step。"
+        "不要重复项目分析。\n\n"
         f"用户目标：{user_text}"
     )
+    inspect_item = WorkItem(
+        id="bootstrap.inspect_repo",
+        kind="bootstrap.inspect_repo",
+        title="Inspect Repo",
+        goal="用短 checklist 检查骨架文件是否存在，不分析实现方案。",
+        role="analyzer",
+        inputs={"prompt": inspect_prompt},
+    )
+    detect_item = WorkItem(
+        id="bootstrap.detect_scaffold",
+        kind="bootstrap.detect_scaffold",
+        title="Detect Scaffold",
+        goal=(
+            "基于前序 checklist 判定 scaffold_ready、reusable、missing 和 next_action。"
+            "不要重新分析整个仓库。"
+        ),
+        role="analyzer",
+        depends_on=["bootstrap.inspect_repo"],
+        inputs={"prompt": detect_prompt},
+    )
+    verify_depends_on = ["bootstrap.detect_scaffold"]
+    generated_items: list[WorkItem] = []
+    if profile is None or profile.scaffold_dir is None:
+        generated_items = [
+            WorkItem(
+                id="bootstrap.generate_skeleton",
+                kind="bootstrap.generate_skeleton",
+                title="Generate Skeleton",
+                goal="只生成缺失骨架文件清单和验收标准；如果已就绪则明确 no scaffold changes needed。",
+                role="implementer",
+                depends_on=["bootstrap.detect_scaffold"],
+                inputs={"prompt": generate_prompt},
+            ),
+            WorkItem(
+                id="bootstrap.write_skeleton",
+                kind="bootstrap.write_skeleton",
+                title="Write Skeleton",
+                goal="只创建或修复缺失骨架文件，不覆盖已可复用文件。",
+                role="implementer",
+                depends_on=["bootstrap.generate_skeleton"],
+                inputs={"prompt": write_prompt},
+            ),
+        ]
+        verify_depends_on = ["bootstrap.write_skeleton"]
+
     return [
-        WorkItem(
-            id="bootstrap.inspect_repo",
-            kind="bootstrap.inspect_repo",
-            title="Inspect Repo",
-            goal="检查当前仓库状态，确认已有 scaffold、源码入口、测试入口和缺失部分。",
-            role="analyzer",
-            inputs={"prompt": bootstrap_prompt},
-        ),
-        WorkItem(
-            id="bootstrap.detect_scaffold",
-            kind="bootstrap.detect_scaffold",
-            title="Detect Scaffold",
-            goal=(
-                "识别当前项目骨架是否已足够支撑后续实现。"
-                "如果 scaffold 已经存在，明确指出可复用部分和仍需补齐的最小缺口。"
-            ),
-            role="analyzer",
-            depends_on=["bootstrap.inspect_repo"],
-            inputs={"prompt": bootstrap_prompt},
-        ),
-        WorkItem(
-            id="bootstrap.generate_skeleton",
-            kind="bootstrap.generate_skeleton",
-            title="Generate Skeleton",
-            goal=(
-                "围绕目标生成最小可运行项目骨架方案，明确需要的源码、测试、配置和入口文件。"
-                f"{bootstrap_hint} 用户目标：{user_text}"
-            ),
-            role="implementer",
-            depends_on=["bootstrap.detect_scaffold"],
-            inputs={"prompt": generate_prompt},
-        ),
-        WorkItem(
-            id="bootstrap.write_skeleton",
-            kind="bootstrap.write_skeleton",
-            title="Write Skeleton",
-            goal="将项目骨架落盘，并确保目录结构、测试和入口文件可运行。",
-            role="implementer",
-            depends_on=["bootstrap.generate_skeleton"],
-            inputs={"prompt": write_prompt},
-        ),
+        inspect_item,
+        detect_item,
+        *generated_items,
         WorkItem(
             id="bootstrap.verify_bootstrap",
             kind="bootstrap.verify_bootstrap",
             title="Verify Bootstrap",
-            goal="复核 bootstrap 结果，确认骨架已满足后续 analyze/edit 的最小前提，并指出剩余风险。",
+            goal="用短 checklist 复核 bootstrap 是否可进入实现阶段。",
             role="reporter",
-            depends_on=["bootstrap.write_skeleton"],
+            depends_on=verify_depends_on,
             inputs={"prompt": verify_prompt},
         ),
     ]
 
 
 def _edit_work_items(user_text: str) -> list[WorkItem]:
-    apply_prompt = f"基于前置定位结果，在最小必要范围内完成实现或修复，并保持变更可验证。\n\n目标：{user_text}"
-    check_prompt = f"检查本轮修改是否覆盖目标、是否存在明显遗漏，以及后续验证应重点关注什么。\n\n目标：{user_text}"
+    select_prompt = (
+        "只定位本轮最小实现切片，不写代码。"
+        "输出最多 10 行：target_files、entrypoints、tests_to_run、risks。"
+        "不要重复项目背景。\n\n"
+        f"目标：{user_text}"
+    )
+    apply_prompt = (
+        "基于前置 target_files 完成最小可验证实现。"
+        "直接编辑必要文件，避免无关重构。"
+        "完成后运行相关测试或说明未运行原因。\n\n"
+        f"目标：{user_text}"
+    )
+    check_prompt = (
+        "只检查本轮修改是否覆盖目标。"
+        "输出最多 8 行：covered、missing、tests、next_focus。"
+        "不要重复实现细节。\n\n"
+        f"目标：{user_text}"
+    )
     summary_prompt = (
-        f"总结本轮修改、影响范围和待验证项，为后续 run_tests / finalize 提供清晰上下文。\n\n目标：{user_text}"
+        "为后续 run_tests / finalize 输出短摘要。"
+        "最多 8 行：changed_files、behavior、tests、remaining_risk。\n\n"
+        f"目标：{user_text}"
     )
     return [
         WorkItem(
             id="edit.select_target_slice",
             kind="edit.select_target_slice",
             title="Select Target Slice",
-            goal=f"定位最相关的实现切片、文件边界和风险点。目标：{user_text}",
+            goal="定位本轮最小实现切片、目标文件、测试命令和风险点。",
             role="analyzer",
-            inputs={"prompt": user_text},
+            inputs={"prompt": select_prompt},
         ),
         WorkItem(
             id="edit.apply_patch_slice",
             kind="edit.apply_patch_slice",
             title="Apply Patch Slice",
-            goal=f"在最小必要范围内完成实现或修复，并保持变更可验证。目标：{user_text}",
+            goal="直接编辑前序 target_files 完成最小可验证实现，并运行相关测试。",
             role="implementer",
             depends_on=["edit.select_target_slice"],
             inputs={"prompt": apply_prompt},

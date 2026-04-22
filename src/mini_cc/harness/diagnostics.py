@@ -8,6 +8,7 @@ from typing import cast
 from mini_cc.harness.models import TraceSpan
 from mini_cc.models import (
     AgentCompletionEvent,
+    AgentHeartbeatEvent,
     AgentStartEvent,
     AgentToolCallEvent,
     AgentToolResultEvent,
@@ -30,6 +31,7 @@ class QueryDiagnostics:
         "tool_call_names",
         "tool_result_count",
         "agent_event_count",
+        "agent_heartbeat_count",
         "total_text_chars",
         "turn_count",
         "message_count",
@@ -60,6 +62,7 @@ class QueryDiagnostics:
         self.tool_call_names: list[str] = []
         self.tool_result_count: int = 0
         self.agent_event_count: int = 0
+        self.agent_heartbeat_count: int = 0
         self.total_text_chars: int = 0
         self.turn_count: int = turn_count
         self.message_count: int = message_count
@@ -133,6 +136,12 @@ class QueryDiagnostics:
         elif isinstance(event, AgentToolResultEvent):
             self.agent_event_count += 1
             self._record_agent_tool_result(event, now)
+        elif isinstance(event, AgentHeartbeatEvent):
+            self.agent_event_count += 1
+            self.agent_heartbeat_count += 1
+            self.tool_trace.append(
+                f"agent[{event.agent_id[:8]}].heartbeat(elapsed={event.elapsed_seconds}s,status={event.status})"
+            )
         elif isinstance(event, AgentCompletionEvent):
             self.agent_event_count += 1
             started_at = self.agent_started_at.pop(event.agent_id, 0.0)
@@ -174,6 +183,7 @@ class QueryDiagnostics:
             "trace_text_delta_count": str(self.text_delta_count),
             "trace_tool_result_count": str(self.tool_result_count),
             "trace_agent_event_count": str(self.agent_event_count),
+            "trace_agent_heartbeat_count": str(self.agent_heartbeat_count),
             "trace_total_text_chars": str(self.total_text_chars),
             "trace_message_count": str(self.message_count),
             "trace_turn_count": str(self.turn_count),

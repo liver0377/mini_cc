@@ -30,8 +30,8 @@ Thumbs.db
 .coverage
 htmlcov/
 .mypy_cache/
-.ruff_cache
-.mini_cc
+.ruff_cache/
+.mini_cc/
 
 # uv
 uv.lock

@@ -46,7 +46,7 @@ harness/
 │                                                                │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────┐  │
 │  │Scheduler │  │StepRunner│  │RunJudge  │  │PolicyEngine  │  │
-│  │ 调度步骤  │  │ 执行步骤  │  │ 健康评估  │  │ 决策下一步    │  │
+│  │调度WorkItem│  │执行WorkItem│  │ 健康评估  │  │ 决策下一步    │  │
 │  └──────────┘  └──────────┘  └──────────┘  └──────────────┘  │
 │                                                                │
 │  ┌──────────────────┐  ┌──────────────────┐  ┌────────────┐  │
@@ -76,7 +76,7 @@ harness/
 │     │                                                            │
 │     ├── Scheduler.schedule()    ──► 选择下一个步骤               │
 │     │                                                            │
-│     ├── StepRunner.execute()    ──► 执行步骤                     │
+│     ├── StepRunner.execute()    ──► 执行 WorkItem                │
 │     │       │                                                    │
 │     │       ├── 构建 prompt → QueryEngine → 收集结果             │
 │     │       └── 或执行 bash / 委派智能体                         │
@@ -89,7 +89,7 @@ harness/
 │     │       ├── RETRY    ──► 重试当前步骤                        │
 │     │       ├── COOLDOWN ──► 等待后继续                          │
 │     │       ├── REPLAN   ──► 重新生成步骤计划                    │
-│     │       ├── BLOCK    ──► 阻塞，等待人工干预                  │
+│     │       ├── BLOCK    ──► 保护性失败终止                      │
 │     │       ├── FAIL     ──► 标记运行失败                        │
 │     │       └── TIME_OUT ──► 超时终止                            │
 │     │                                                            │
@@ -107,12 +107,135 @@ harness/
 └──────────────────────────────────────────────────────────────────┘
 ```
 
+### SupervisorLoop 状态机
+
+`SupervisorLoop` 是 Harness 的主状态机。它每轮循环都先同步外部状态，再选择可执行单元，执行后通过 `RunJudge` 与 `PolicyEngine` 决定下一次状态迁移。
+
+#### 主循环状态迁移
+
+```
+CREATED
+   │ run_with_interrupt()
+   ▼
+RUNNING
+   │
+   ├── 用户取消 / interrupt_event.set()
+   │      ▼
+   │   CANCELLED
+   │
+   ├── PolicyEngine.check_run_limits()
+   │      ├── 超过 deadline       ──► TIMED_OUT
+   │      ├── 超过测试/Bash 预算  ──► FAILED
+   │      └── Agent 并发异常      ──► FAILED
+   │
+   ├── provider 瞬时失败
+   │      ▼
+   │   COOLDOWN
+   │      │ cooldown_until 到期
+   │      ▼
+   │   RUNNING
+   │
+   ├── Scheduler 无可执行项
+   │      ├── 仍有后台 Agent 运行 ──► 等待并继续 RUNNING
+   │      └── 无后台 Agent       ──► COMPLETED
+   │
+   └── WorkItem 执行完成
+          │
+          ▼
+       RunJudge.assess()
+          │
+          ▼
+       PolicyEngine.evaluate_step()
+          ├── CONTINUE  ──► RUNNING
+          ├── RETRY     ──► RUNNING
+          ├── REPLAN    ──► RUNNING（插入 MAKE_PLAN）
+          ├── COOLDOWN  ──► COOLDOWN
+          ├── BLOCK     ──► FAILED
+          ├── FAIL      ──► FAILED
+          ├── COMPLETE  ──► COMPLETED
+          └── TIME_OUT  ──► TIMED_OUT
+```
+
+#### 每轮循环的执行顺序
+
+```
+while not run_state.is_terminal:
+    1. 检查取消信号
+    2. 处理 cooldown
+    3. drain 子 Agent 生命周期事件
+    4. drain 已完成的后台只读 WorkItem
+    5. 检查运行预算和并发限制
+    6. 优先批量派发 readonly WorkItem
+    7. Scheduler 选择下一个 WorkItem
+    8. 标记 Step / WorkItem 为执行中并写入 scheduler decision
+    9. StepRunner 执行 WorkItem
+   10. 保存 artifact、trace、snapshot、review
+   11. RunJudge 评估健康度
+   12. PolicyEngine 生成决策
+   13. 更新 RunState / Step / WorkItem 状态
+   14. emit step_completed 并保存 checkpoint
+
+终止后生成 Documentation.md 并保存最终 RunState。
+```
+
+#### Step 状态迁移
+
+```
+PENDING
+   │ Scheduler 选中
+   ▼
+IN_PROGRESS
+   │
+   ├── CONTINUE / COMPLETE
+   │      ▼
+   │   SUCCEEDED
+   │
+   ├── RETRY
+   │      ▼
+   │   PENDING（retry_count + 1）
+   │
+   ├── REPLAN
+   │      ├── 有进展或成功  ──► SUCCEEDED
+   │      └── 无进展失败    ──► FAILED_RETRYABLE
+   │
+   ├── COOLDOWN
+   │      ▼
+   │   PENDING（retry_count + 1）
+   │
+   └── BLOCK / FAIL / 终止性 WorkItem 失败
+          ▼
+       FAILED_TERMINAL
+```
+
+#### WorkItem 状态迁移
+
+```
+PENDING
+   │ 依赖满足，Scheduler 选中
+   ▼
+IN_PROGRESS
+   │
+   ├── result.success
+   │      ▼
+   │   SUCCEEDED
+   │
+   ├── result.retryable 且仍有重试预算
+   │      ▼
+   │   PENDING（retry_count + 1）
+   │
+   └── 不可重试或重试耗尽
+          ▼
+       FAILED_TERMINAL
+```
+
+后台只读 WorkItem 是一个特殊分支：`SupervisorLoop` 会先把它标记为 `IN_PROGRESS`，通过 `start_readonly_work_item_background()` 启动后台 Agent，然后在后续循环中由 `_drain_completed_background_work_items()` 读取 Agent 完成事件和输出，再把 WorkItem 更新为 `SUCCEEDED` 或 `FAILED_TERMINAL`。
+
 ### 步骤执行流程
 
 ```
-StepRunner.execute(step)
+StepRunner.execute(work_item)
    │
-   ├── 根据 StepKind 选择执行方式
+   ├── 根据 WorkItem 所属 StepKind / role 选择执行方式
    │
    │   ┌───────────────────────────────────────────┐
    │   │ StepKind                                   │
@@ -125,7 +248,7 @@ StepRunner.execute(step)
    │   │ FINALIZE   ──► 收尾 / 清理                 │
    │   └───────────────────────────────────────────┘
    │
-   ├── 为步骤分配角色（dispatch_roles）
+   ├── 为 WorkItem 分配角色（dispatch_roles 或显式 role）
    │   ├── implementer  → 实现代码
    │   ├── analyzer     → 分析诊断
    │   ├── planner      → 规划设计
@@ -134,7 +257,7 @@ StepRunner.execute(step)
    │
    ├── 构建 prompt（包含上下文、经验教训、历史日志）
    │
-   ├── 调用 QueryEngine 执行
+   ├── 调用 QueryEngine / Bash / SubAgent 执行
    │
    └── 收集结果（输出、工具调用、诊断信息）
 ```
@@ -155,23 +278,23 @@ StepRunner.execute(step)
 
 ```
 Scheduler
-├── 单步调度
+├── WorkItem 调度
 │   ├── 优先级排序（依赖满足的步骤优先）
-│   └── 选择下一个可执行步骤
+│   └── 选择下一个可执行 WorkItem
 │
-├── 工作项调度
-│   ├── 将步骤分解为工作项
-│   └── 按优先级分配
+├── Step 聚合
+│   ├── Step 仅作为阶段容器
+│   └── 所有真实执行单元统一封装为 WorkItem
 │
 └── 只读批量调度
     ├── 识别可并行的只读工作项
     └── 批量分配给后台智能体
 ```
 
-### StepRunner — 步骤执行器
+### StepRunner — WorkItem 执行器
 
 ```
-StepRunner.execute(step)
+StepRunner.execute(work_item)
 ├── 准备执行上下文
 │   ├── 加载运行历史
 │   ├── 加载经验教训
@@ -199,7 +322,7 @@ StepRunner.execute(step)
 RunJudge.assess(run_state)
 ├── PROGRESSING    # 正常推进中
 ├── STALLED        # 停滞不前（多次重试无效）
-├── BLOCKED        # 被阻塞（外部依赖无法满足）
+├── BLOCKED        # 保护性阻断信号，Policy 最终收束为 FAILED
 ├── REGRESSING     # 回退（修复引入新问题）
 └── 评估维度
     ├── 步骤完成率
@@ -225,7 +348,7 @@ PolicyEngine.decide(assessment, step_result)
 │   ├── RETRY      # 重试当前步骤
 │   ├── COOLDOWN   # 冷却后继续
 │   ├── REPLAN     # 重新规划步骤
-│   ├── BLOCK      # 阻塞
+│   ├── BLOCK      # 保护性失败终止
 │   ├── FAIL       # 标记失败
 │   └── TIME_OUT   # 超时
 │

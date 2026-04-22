@@ -9,6 +9,7 @@ import pytest
 from mini_cc.models import (
     AgentCompletionEvent,
     AgentConfig,
+    AgentHeartbeatEvent,
     AgentId,
     AgentStartEvent,
     AgentStatus,
@@ -164,6 +165,30 @@ class TestSubAgent:
         assert any(isinstance(e, AgentToolCallEvent) for e in events)
         assert any(isinstance(e, AgentToolResultEvent) for e in events)
         assert any(isinstance(e, AgentTextDeltaEvent) for e in events)
+
+    async def test_run_background_emits_heartbeat(self, tmp_path, task_service, completion_queue, monkeypatch):
+        import mini_cc.runtime.agents.sub_agent as sub_agent_module
+
+        monkeypatch.setattr(sub_agent_module, "_HEARTBEAT_INTERVAL_SECONDS", 0.01)
+        event_queue: asyncio.Queue[Event] = asyncio.Queue()
+
+        async def _slow_stream(messages, schemas):
+            await asyncio.sleep(0.03)
+            yield TextDelta(content="done")
+
+        manager = _make_manager(tmp_path, task_service, completion_queue, stream_fn=_slow_stream)
+        agent = await manager.create_agent(prompt="bg slow", readonly=True)
+        agent._event_queue = event_queue
+
+        await agent.run_background("bg slow")
+
+        events: list[Event] = []
+        while not event_queue.empty():
+            events.append(await event_queue.get())
+        heartbeats = [event for event in events if isinstance(event, AgentHeartbeatEvent)]
+        assert heartbeats
+        assert heartbeats[0].agent_id == agent.config.agent_id
+        assert heartbeats[0].task_id == agent.task_id
 
     async def test_readonly_completion_reports_stale_if_workspace_changed(
         self,

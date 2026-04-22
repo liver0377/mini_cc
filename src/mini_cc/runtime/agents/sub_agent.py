@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from collections.abc import AsyncGenerator, Callable
+from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mini_cc.models import (
     AgentCompletionEvent,
     AgentConfig,
+    AgentHeartbeatEvent,
     AgentStartEvent,
     AgentStatus,
     AgentTextDeltaEvent,
@@ -26,6 +30,8 @@ from mini_cc.task.service import TaskService
 if TYPE_CHECKING:
     from mini_cc.runtime.agents.bus import AgentEventBus
     from mini_cc.runtime.agents.snapshot import SnapshotService
+
+_HEARTBEAT_INTERVAL_SECONDS = 30.0
 
 
 class SubAgent:
@@ -61,6 +67,8 @@ class SubAgent:
         self._collected_output: list[str] = []
         self._completed_version_stamp = config.base_version_stamp
         self._background_task: asyncio.Task[None] | None = None
+        self._heartbeat_task: asyncio.Task[None] | None = None
+        self._started_at: float = 0.0
 
     @property
     def config(self) -> AgentConfig:
@@ -92,7 +100,9 @@ class SubAgent:
 
     async def run(self, prompt: str) -> AsyncGenerator[Event, None]:
         self._status = AgentStatus.RUNNING
+        self._started_at = time.monotonic()
         await self._task_service.claim(self._task_id, owner=f"agent-{self._config.agent_id}")
+        self._start_heartbeat()
 
         try:
             async for event in self._engine.submit_message(prompt, self._state):
@@ -104,16 +114,23 @@ class SubAgent:
                 yield event
 
             await self._finish(success=True)
+        except asyncio.CancelledError:
+            await self._finish(success=False, error="cancelled")
+            raise
         except Exception as e:
             await self._finish(success=False, error=str(e))
             raise
+        finally:
+            await self._stop_heartbeat()
 
     async def run_background(self, prompt: str) -> None:
         self._status = AgentStatus.BACKGROUND_RUNNING
+        self._started_at = time.monotonic()
         await self._task_service.claim(self._task_id, owner=f"agent-{self._config.agent_id}")
         await self._emit_event(
             AgentStartEvent(agent_id=self._config.agent_id, task_id=self._task_id, prompt=prompt[:80])
         )
+        self._start_heartbeat()
 
         try:
             async for event in self._engine.submit_message(prompt, self._state):
@@ -124,8 +141,13 @@ class SubAgent:
                 self._collect_text(event)
                 self._forward_event(event)
             await self._finish(success=True)
+        except asyncio.CancelledError:
+            await self._finish(success=False, error="cancelled")
+            raise
         except Exception as e:
             await self._finish(success=False, error=str(e))
+        finally:
+            await self._stop_heartbeat()
 
     def cancel(self) -> None:
         self._cancel_event.set()
@@ -135,6 +157,45 @@ class SubAgent:
     async def _emit_event(self, event: Event) -> None:
         if self._event_queue is not None:
             await self._event_queue.put(event)
+
+    def _start_heartbeat(self) -> None:
+        if self._heartbeat_task is not None and not self._heartbeat_task.done():
+            return
+        if self._event_queue is None and self._lifecycle_bus is None:
+            return
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+    async def _stop_heartbeat(self) -> None:
+        if self._heartbeat_task is None:
+            return
+        self._heartbeat_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await self._heartbeat_task
+        self._heartbeat_task = None
+
+    async def _heartbeat_loop(self) -> None:
+        while True:
+            await asyncio.sleep(_HEARTBEAT_INTERVAL_SECONDS)
+            elapsed_seconds = max(0, int(time.monotonic() - self._started_at))
+            event = AgentHeartbeatEvent(
+                agent_id=self._config.agent_id,
+                task_id=self._task_id,
+                elapsed_seconds=elapsed_seconds,
+                status=self._status.value,
+            )
+            await self._emit_event(event)
+            if self._lifecycle_bus is not None:
+                from mini_cc.runtime.agents.bus import AgentLifecycleEvent
+
+                self._lifecycle_bus.publish_nowait(
+                    AgentLifecycleEvent(
+                        event_type="heartbeat",
+                        agent_id=self._config.agent_id,
+                        heartbeat_at=datetime.now(UTC).isoformat(),
+                        heartbeat_elapsed_seconds=elapsed_seconds,
+                        heartbeat_status=self._status.value,
+                    )
+                )
 
     def _forward_event(self, event: Event) -> None:
         if self._event_queue is None:

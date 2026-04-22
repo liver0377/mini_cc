@@ -3,6 +3,7 @@ from __future__ import annotations
 from mini_cc.models.agent import AgentBudget, AgentConfig, AgentId, AgentStatus, generate_agent_id
 from mini_cc.models.events import (
     AgentCompletionEvent,
+    AgentHeartbeatEvent,
     AgentStartEvent,
     AgentTextDeltaEvent,
     AgentToolCallEvent,
@@ -25,6 +26,7 @@ __all__ = [
     "AgentBudget",
     "AgentCompletionEvent",
     "AgentConfig",
+    "AgentHeartbeatEvent",
     "AgentId",
     "AgentStartEvent",
     "AgentStatus",

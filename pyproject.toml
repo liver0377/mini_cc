@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "基于 Python 实现的轻量级多 Agent 协作代码助手 CLI"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "openai>=1.0.0",
     "pyperclip>=1.8.0",

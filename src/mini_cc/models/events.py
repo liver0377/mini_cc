@@ -67,6 +67,14 @@ class AgentToolResultEvent:
 
 
 @dataclass
+class AgentHeartbeatEvent:
+    agent_id: str
+    task_id: int
+    elapsed_seconds: int
+    status: str = "running"
+
+
+@dataclass
 class AgentCompletionEvent:
     agent_id: str
     task_id: int
@@ -94,6 +102,7 @@ Event = (
     | AgentTextDeltaEvent
     | AgentToolCallEvent
     | AgentToolResultEvent
+    | AgentHeartbeatEvent
     | AgentCompletionEvent
 )
 

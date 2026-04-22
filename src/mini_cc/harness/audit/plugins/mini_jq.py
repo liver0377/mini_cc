@@ -16,7 +16,7 @@ class MiniJQAuditProfile(TaskAuditProfile):
     keywords = ["mini-jq", "mini jq", "jq 子集"]
     description = (
         "Mini jq JSON 处理器语义审计：对比系统 jq 对输入执行 filter 表达式的输出，"
-        "覆盖 identity、字段访问、管道、数组迭代等核心语义。"
+        "覆盖 jq core、language、builtin 三层语义。"
     )
     scaffold_dir = _MINI_JQ_SCAFFOLD_DIR
     default_test_command = "uv run pytest -q"
@@ -57,6 +57,10 @@ class MiniJQAuditProfile(TaskAuditProfile):
         if isinstance(coverage, dict):
             for key, value in coverage.items():
                 dimensions[f"coverage_{key}"] = str(value).lower() if isinstance(value, bool) else str(value)
+        layers = loaded.get("layers")
+        if isinstance(layers, dict):
+            for key, value in layers.items():
+                dimensions[f"layer_{key}"] = str(value).lower() if isinstance(value, bool) else str(value)
 
         score_total = loaded.get("score_total")
         blockers = [str(item) for item in loaded.get("blockers", []) if str(item).strip()]

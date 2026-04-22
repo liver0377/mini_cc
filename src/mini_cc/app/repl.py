@@ -12,6 +12,7 @@ from mini_cc.app.presentation import COMPACT_LABELS
 from mini_cc.context.engine_context import EngineContext
 from mini_cc.models import (
     AgentCompletionEvent,
+    AgentHeartbeatEvent,
     AgentStartEvent,
     AgentToolCallEvent,
     AgentToolResultEvent,
@@ -72,6 +73,14 @@ def render_event(event: Event, *, console: Console | None = None) -> None:
         _print(
             Text.from_markup(
                 f"    {marker} [magenta]{event.agent_id}[/][dim] ▸ [/][cyan]{event.tool_name}[/]: {preview}"
+            )
+        )
+
+    elif isinstance(event, AgentHeartbeatEvent):
+        _print(
+            Text.from_markup(
+                f"    [dim]心跳[/] [magenta]{event.agent_id}[/]"
+                f"[dim] alive {event.elapsed_seconds}s ({event.status})[/]"
             )
         )
 

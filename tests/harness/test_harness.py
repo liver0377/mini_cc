@@ -40,11 +40,12 @@ from mini_cc.harness.models import (
 )
 from mini_cc.harness.policy import PolicyAction, PolicyDecision, PolicyEngine
 from mini_cc.harness.runner import RunHarness
-from mini_cc.harness.scheduler import ExecutionCandidate, RejectedCandidate, Scheduler, SchedulingDecision
+from mini_cc.harness.scheduler import ExecutionCandidate, Scheduler, SchedulingDecision
 from mini_cc.harness.step_runner import StepRunner
 from mini_cc.harness.supervisor import SupervisorLoop
 from mini_cc.models import (
     AgentCompletionEvent,
+    AgentHeartbeatEvent,
     AgentStartEvent,
     AgentToolCallEvent,
     AgentToolResultEvent,
@@ -525,7 +526,8 @@ class TestRunHarness:
 
         assert result.status == restored.status
         assert restored.status.value == "completed"
-        assert run_test_step.retry_count == 1
+        assert run_test_step.retry_count == 0
+        assert run_test_step.work_items[0].retry_count == 1
         assert attempts["tests"] == 2
         assert "# Run " in documentation
         assert "## 基本信息" in documentation
@@ -793,7 +795,7 @@ class TestIterationOptimizer:
         artifact_path.write_text(
             (
                 '{"profile":"mini_jq","summary":{"cases_total":20,"cases_passed":15,"cases_failed":5},'
-                '"coverage":{"identity":true,"pipe":"partial"},'
+                '"coverage":{"identity":true,"pipe":"partial"},"layers":{"core":true,"language":"partial","builtin":false},'
                 '"blockers":["pipe evaluator mismatch"],'
                 '"recommended_next_focus":"pipe_semantics"}'
             ),
@@ -808,6 +810,9 @@ class TestIterationOptimizer:
         assert snapshot.metadata["audit_profile"] == "mini_jq"
         assert snapshot.metadata["audit_summary"] == "15/20 semantic cases passed"
         assert snapshot.metadata["audit_cases_passed"] == "15"
+        assert snapshot.metadata["audit_layer_core"] == "true"
+        assert snapshot.metadata["audit_layer_language"] == "partial"
+        assert snapshot.metadata["audit_layer_builtin"] == "false"
         assert snapshot.metadata["audit_blockers"] == "pipe evaluator mismatch"
         assert snapshot.metadata["audit_next_focus"] == "pipe_semantics"
 
@@ -902,6 +907,57 @@ class TestPrepareRunRequestWorkItems:
             "edit.emit_change_summary",
         ]
 
+    def test_bootstrap_work_item_prompts_are_concrete_and_bounded(self, tmp_path) -> None:
+        steps, _ = prepare_run_request("实现一个 mini-jq 子集", "build", tmp_path)
+
+        bootstrap = next(step for step in steps if step.kind == StepKind.BOOTSTRAP_PROJECT)
+        inspect_item = next(item for item in bootstrap.work_items if item.id == "bootstrap.inspect_repo")
+        detect_item = next(item for item in bootstrap.work_items if item.id == "bootstrap.detect_scaffold")
+
+        assert "最多 10 行 checklist" in inspect_item.inputs["prompt"]
+        assert "不分析实现方案" in inspect_item.goal
+        assert "scaffold_ready" in detect_item.inputs["prompt"]
+        assert "不要重新分析整个仓库" in detect_item.inputs["prompt"]
+
+    def test_profile_scaffold_skips_write_agent_bootstrap_items(self, tmp_path) -> None:
+        registry = TaskAuditRegistry()
+        steps, _ = prepare_run_request("实现一个 mini-jq 子集", "build", tmp_path, registry=registry)
+
+        bootstrap = next(step for step in steps if step.kind == StepKind.BOOTSTRAP_PROJECT)
+
+        assert [item.id for item in bootstrap.work_items] == [
+            "bootstrap.inspect_repo",
+            "bootstrap.detect_scaffold",
+            "bootstrap.verify_bootstrap",
+        ]
+        assert bootstrap.work_items[-1].depends_on == ["bootstrap.detect_scaffold"]
+
+    def test_prior_work_item_context_is_truncated(self) -> None:
+        runner = StepRunner()
+        step = Step(
+            id="step-1",
+            kind=StepKind.BOOTSTRAP_PROJECT,
+            title="Bootstrap",
+            goal="bootstrap",
+            work_items=[
+                WorkItem(
+                    id="a",
+                    kind="a",
+                    title="A",
+                    goal="a",
+                    role="analyzer",
+                    status="succeeded",
+                    summary="x" * 2000,
+                ),
+                WorkItem(id="b", kind="b", title="B", goal="b", role="analyzer", depends_on=["a"]),
+            ],
+        )
+
+        context = runner._build_prior_work_item_context(step, step.work_items[1])
+
+        assert "...[truncated]" in context
+        assert len(context) < 1500
+
 
 class TestSupervisorWorkItems:
     async def test_supervisor_executes_work_items_before_finalizing_step(self, tmp_path) -> None:
@@ -971,11 +1027,75 @@ class TestSupervisorWorkItems:
         assert "done:w1" in step.summary
         assert "done:w2" in step.summary
 
-    def test_select_next_execution_prioritizes_verifier_over_reporter(self, tmp_path) -> None:
+    async def test_retryable_work_item_failure_does_not_finalize_step(self, tmp_path) -> None:
+        store = CheckpointStore(base_dir=tmp_path)
+
+        class _RetryRunner:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.work_item_ids: list[str] = []
+
+            def set_interrupt_event(self, interrupt_event) -> None:
+                return None
+
+            def set_step_context(self, step: Step) -> None:
+                return None
+
+            def clear_step_context(self) -> None:
+                return None
+
+            async def run_work_item(self, step: Step, work_item: WorkItem, run_state: RunState) -> StepResult:
+                self.calls += 1
+                self.work_item_ids.append(work_item.id)
+                if self.calls == 1:
+                    return StepResult(
+                        success=False,
+                        summary="retry later",
+                        error="temporary failure",
+                        retryable=True,
+                        progress_made=False,
+                    )
+                return StepResult(success=True, summary="done after retry", progress_made=True)
+
+        runner = _RetryRunner()
+        supervisor = SupervisorLoop(store=store, step_runner=runner)  # type: ignore[arg-type]
+        run_state = RunState(
+            run_id="run-work-item-retry",
+            goal="retry item",
+            steps=[
+                Step(
+                    id="step-1",
+                    kind=StepKind.EDIT_CODE,
+                    title="Edit",
+                    goal="edit",
+                    work_items=[
+                        WorkItem(
+                            id="w1",
+                            kind="edit.apply_patch_slice",
+                            title="Apply",
+                            goal="apply",
+                            role="implementer",
+                        )
+                    ],
+                )
+            ],
+        )
+
+        result = await supervisor.run(run_state)
+
+        step = result.steps[0]
+        assert result.status == RunStatus.COMPLETED
+        assert runner.work_item_ids.count("w1") == 2
+        assert step.status == StepStatus.SUCCEEDED
+        assert step.retry_count == 0
+        assert step.work_items[0].retry_count == 1
+        assert step.work_items[0].status == "succeeded"
+
+    def test_select_next_execution_takes_first_ready_step(self, tmp_path) -> None:
         del tmp_path
         scheduler = Scheduler()
         run_state = RunState(
-            run_id="run-priority",
+            run_id="run-first-ready",
             goal="test",
             steps=[
                 Step(id="step-final", kind=StepKind.FINALIZE, title="Finalize", goal="finalize"),
@@ -988,16 +1108,16 @@ class TestSupervisorWorkItems:
         assert decision is not None
         assert isinstance(decision, SchedulingDecision)
         assert isinstance(decision.selected, ExecutionCandidate)
-        assert decision.selected.step.id == "step-test"
-        assert decision.selected.work_item is None
-        assert decision.selected.role == "verifier"
-        assert "highest-priority verifier candidate" in decision.reason
+        assert decision.selected.step.id == "step-final"
+        assert decision.selected.work_item.id == "step-final.main"
+        assert decision.selected.role == "reporter"
+        assert "highest-priority reporter candidate" in decision.reason
 
-    def test_select_next_execution_keeps_verifier_behind_prior_implementer(self, tmp_path) -> None:
+    def test_select_next_execution_takes_first_step_regardless_of_role(self, tmp_path) -> None:
         del tmp_path
         scheduler = Scheduler()
         run_state = RunState(
-            run_id="run-priority-order",
+            run_id="run-serial-order",
             goal="test",
             steps=[
                 Step(id="step-edit", kind=StepKind.EDIT_CODE, title="Edit", goal="edit"),
@@ -1009,34 +1129,83 @@ class TestSupervisorWorkItems:
 
         assert decision is not None
         assert decision.selected.step.id == "step-edit"
-        assert decision.selected.work_item is None
+        assert decision.selected.work_item.id == "step-edit.main"
         assert decision.selected.role == "implementer"
         assert "highest-priority implementer candidate" in decision.reason
 
-    def test_select_next_execution_skips_spawn_readonly_when_readonly_capacity_is_full(self, tmp_path) -> None:
+    def test_select_within_step_uses_role_priority(self, tmp_path) -> None:
+        del tmp_path
+        scheduler = Scheduler()
+        step = Step(
+            id="step-multi",
+            kind=StepKind.EDIT_CODE,
+            title="Multi",
+            goal="multi",
+            work_items=[
+                WorkItem(id="wi-reporter", kind="report", title="Report", goal="r", role="reporter"),
+                WorkItem(id="wi-implementer", kind="edit", title="Edit", goal="e", role="implementer"),
+            ],
+        )
+        run_state = RunState(run_id="run-intra", goal="test", steps=[step])
+
+        decision = scheduler.decide(run_state)
+
+        assert decision is not None
+        assert decision.selected.step.id == "step-multi"
+        assert decision.selected.work_item.id == "wi-implementer"
+        assert decision.selected.role == "implementer"
+
+    def test_select_within_step_uses_position_as_tiebreaker(self, tmp_path) -> None:
+        del tmp_path
+        scheduler = Scheduler()
+        step = Step(
+            id="step-multi",
+            kind=StepKind.EDIT_CODE,
+            title="Multi",
+            goal="multi",
+            work_items=[
+                WorkItem(id="wi-first", kind="report", title="First", goal="f", role="reporter"),
+                WorkItem(id="wi-second", kind="report", title="Second", goal="s", role="reporter"),
+            ],
+        )
+        run_state = RunState(run_id="run-tie", goal="test", steps=[step])
+
+        decision = scheduler.decide(run_state)
+
+        assert decision is not None
+        assert decision.selected.work_item.id == "wi-first"
+
+    def test_select_skips_steps_with_no_ready_work_items(self, tmp_path) -> None:
         del tmp_path
         scheduler = Scheduler()
         run_state = RunState(
-            run_id="run-capacity",
+            run_id="run-skip-empty",
             goal="test",
-            budget=RunBudget(max_active_agents=1),
-            spawned_agents=[AgentTrace(agent_id="a1", readonly=True)],
             steps=[
-                Step(id="step-ro", kind=StepKind.SPAWN_READONLY_AGENT, title="RO", goal="spawn"),
-                Step(id="step-edit", kind=StepKind.EDIT_CODE, title="Edit", goal="edit"),
+                Step(
+                    id="step-done",
+                    kind=StepKind.FINALIZE,
+                    title="Done",
+                    goal="done",
+                    work_items=[
+                        WorkItem(
+                            id="step-done.main",
+                            kind="finalize",
+                            title="Done",
+                            goal="d",
+                            role="reporter",
+                            status="succeeded",
+                        ),
+                    ],
+                ),
+                Step(id="step-test", kind=StepKind.RUN_TESTS, title="Test", goal="test", inputs={"command": "pytest"}),
             ],
         )
 
         decision = scheduler.decide(run_state)
 
         assert decision is not None
-        assert decision.selected.step.id == "step-edit"
-        assert decision.selected.work_item is None
-        assert decision.considered_count == 1
-        assert len(decision.rejected) == 1
-        assert isinstance(decision.rejected[0], RejectedCandidate)
-        assert decision.rejected[0].step.id == "step-ro"
-        assert decision.rejected[0].reason == "readonly capacity is full"
+        assert decision.selected.step.id == "step-test"
 
 
 class TestSupervisorCooldown:
@@ -1320,6 +1489,13 @@ class TestStepRunnerQueryIntegration:
             )
         )
         diag.record_event(
+            AgentHeartbeatEvent(
+                agent_id="agent-12345678",
+                task_id=1,
+                elapsed_seconds=30,
+            )
+        )
+        diag.record_event(
             AgentCompletionEvent(
                 agent_id="agent-12345678",
                 task_id=1,
@@ -1336,11 +1512,51 @@ class TestStepRunnerQueryIntegration:
         assert "trace_tool_outline" in metadata
         assert "agent(inspect src)=" in metadata["trace_tool_outline"]
         assert "agent[agent-12].file_read(success=true" in metadata["trace_tool_outline"]
+        assert "agent[agent-12].heartbeat(elapsed=30s,status=running)" in metadata["trace_tool_outline"]
         assert metadata["trace_text_delta_count"] == "1"
         assert metadata["trace_tool_result_count"] == "1"
-        assert metadata["trace_agent_event_count"] == "4"
+        assert metadata["trace_agent_event_count"] == "5"
+        assert metadata["trace_agent_heartbeat_count"] == "1"
         assert metadata["trace_tool_names"] == "agent"
         assert not any(key.startswith("diag_") for key in metadata)
+
+    async def test_agent_loop_emits_heartbeat_when_child_is_quiet(self, monkeypatch) -> None:
+        import mini_cc.harness.step_runner as step_runner_module
+
+        monkeypatch.setattr(step_runner_module, "_AGENT_HEARTBEAT_INTERVAL_SECONDS", 0.01)
+        events: list[Event] = []
+
+        async def _quiet_agent() -> AsyncGenerator[Event, None]:
+            await asyncio.sleep(0.03)
+            yield TextDelta(content="done")
+
+        async def _sink(event: Event, step: Step, run_state: RunState) -> None:
+            events.append(event)
+
+        runner = StepRunner(query_event_sink=_sink)
+        run_state = RunState(run_id="run-heartbeat", goal="test")
+        step = Step(id="step-heartbeat", kind=StepKind.EDIT_CODE, title="Edit", goal="edit")
+        step_runner_module._current_diag_ref.set(step_runner_module._DiagRef())
+
+        result = await runner._execute_agent_loop(
+            agent_id="agent-heartbeat",
+            task_id=1,
+            agent_events=_quiet_agent(),
+            prompt="work",
+            readonly=False,
+            mode="build",
+            step=step,
+            run_state=run_state,
+            work_item_id="item-1",
+            extra_metadata={},
+            success_label="test",
+        )
+
+        heartbeats = [event for event in events if isinstance(event, AgentHeartbeatEvent)]
+        assert result.success is True
+        assert result.summary == "done"
+        assert heartbeats
+        assert result.metadata["trace_agent_heartbeat_count"] == str(len(heartbeats))
 
 
 class TestSupervisorMetadata:
@@ -1453,7 +1669,7 @@ class TestSupervisorMetadata:
         await supervisor.run(run_state)
 
         spans = store.load_trace_spans(run_state.run_id)
-        assert any(span.kind == "step" and span.step_id == "step-1" for span in spans)
+        assert any(span.kind == "work_item" and span.step_id == "step-1" for span in spans)
         assert any(span.kind == "tool" and span.name == "file_read" for span in spans)
 
     async def test_step_completed_event_includes_failure_class(self, tmp_path) -> None:
@@ -1516,7 +1732,7 @@ class TestAgentTraceAndActiveCount:
         state = RunState(run_id="r1", goal="test", status="blocked")
         assert state.is_terminal is True
 
-    def test_terminal_limit_decision_preserves_blocked_phase(self, tmp_path) -> None:
+    def test_terminal_limit_decision_maps_block_decision_to_failed_phase(self, tmp_path) -> None:
         store = CheckpointStore(base_dir=tmp_path)
         supervisor = SupervisorLoop(store=store, step_runner=StepRunner())
         run_state = RunState(run_id="r1", goal="test")
@@ -1526,12 +1742,12 @@ class TestAgentTraceAndActiveCount:
             PolicyDecision(
                 action=PolicyAction.BLOCK,
                 reason="active agent limit exceeded",
-                terminal_status="blocked",
+                terminal_status="failed",
             ),
         )
 
-        assert run_state.status.value == "blocked"
-        assert run_state.phase == "blocked"
+        assert run_state.status.value == "failed"
+        assert run_state.phase == "failed"
 
     def test_active_agent_count_with_active_agents(self) -> None:
         state = RunState(
@@ -1588,6 +1804,15 @@ class TestSupervisorLifecycleDrain:
                     scope_paths=["src/"],
                 )
             )
+            bus.publish_nowait(
+                AgentLifecycleEvent(
+                    event_type="heartbeat",
+                    agent_id="agent-001",
+                    heartbeat_at="2026-04-22T03:00:00+00:00",
+                    heartbeat_elapsed_seconds=30,
+                    heartbeat_status="running",
+                )
+            )
             return StepResult(success=True, summary="plan done", progress_made=True)
 
         runner = StepRunner(
@@ -1610,7 +1835,12 @@ class TestSupervisorLifecycleDrain:
         assert result.spawned_agents[0].agent_id == "agent-001"
         assert result.spawned_agents[0].readonly is True
         assert result.spawned_agents[0].source_step_id is not None
+        assert result.spawned_agents[0].heartbeat_count == 1
+        assert result.spawned_agents[0].last_heartbeat_at == "2026-04-22T03:00:00+00:00"
+        assert result.spawned_agents[0].last_heartbeat_status == "running"
         assert result.metadata["agents_created_readonly"] == "1"
+        assert result.metadata["agent_heartbeat_count"] == "1"
+        assert result.metadata["agent_latest_heartbeat_at"] == "2026-04-22T03:00:00+00:00"
         assert result.metadata["agent_peak_active"] == "1"
 
     async def test_lifecycle_completion_captures_generic_agent_result_signals(self, tmp_path) -> None:
@@ -1735,7 +1965,7 @@ class TestSupervisorStepExceptions:
         restored = store.load_state(result.run_id)
         step = restored.steps[0]
 
-        assert result.status.value == "blocked"
+        assert result.status.value == "failed"
         assert step.status == StepStatus.FAILED_TERMINAL
         assert step.error == "Unhandled step exception: boom"
 
@@ -1814,6 +2044,7 @@ class TestAgentBudgetInStepRunner:
             inputs={
                 "command": (
                     'printf \'{"profile":"mini_jq","summary":{"cases_total":10,"cases_passed":8,"cases_failed":2},'
+                    '"layers":{"core":true,"language":"partial","builtin":false},'
                     '"blockers":["pipe partial"],"regressions":[],"improvements":["field access stable"],'
                     '"recommended_next_focus":"pipe_semantics"}\''
                 ),
@@ -1829,6 +2060,9 @@ class TestAgentBudgetInStepRunner:
         assert result.metadata["artifact_name"] == "jq_audit.json"
         assert result.metadata["audit_profile"] == "mini_jq"
         assert result.metadata["audit_summary"] == "8/10 semantic cases passed"
+        assert result.metadata["audit_layer_core"] == "true"
+        assert result.metadata["audit_layer_language"] == "partial"
+        assert result.metadata["audit_layer_builtin"] == "false"
         assert result.metadata["audit_blockers"] == "pipe partial"
         assert result.metadata["audit_next_focus"] == "pipe_semantics"
         assert result.metadata["audit_improvements"] == "field access stable"
@@ -1978,7 +2212,7 @@ class TestPolicyEngine:
         decision = engine.evaluate_step(run_state, step, result, RunHealth.STALLED)
 
         assert decision.action == PolicyAction.FAIL
-        assert decision.terminal_status == RunStatus.WAITING_HUMAN
+        assert decision.terminal_status == RunStatus.FAILED
 
     def test_timeout_verification_step_replans_after_retries_exhausted(self) -> None:
         engine = PolicyEngine()
@@ -2019,6 +2253,7 @@ class TestPolicyEngine:
         decision = engine.evaluate_step(run_state, step, result, RunHealth.BLOCKED)
 
         assert decision.action == PolicyAction.BLOCK
+        assert decision.terminal_status == RunStatus.FAILED
         assert decision.reason == "run is blocked by repeated step timeouts"
 
     def test_replan_step_includes_latest_agent_issue(self) -> None:

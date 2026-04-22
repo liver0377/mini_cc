@@ -68,11 +68,13 @@ def load_dotenv() -> None:
     try:
         from dotenv import load_dotenv as _load
 
-        project_root = Path(__file__).resolve().parents[3]
-        dotenv_path = project_root / ".env"
-        _load(dotenv_path=dotenv_path, override=True)
+        _load(dotenv_path=_project_root() / ".env", override=True)
     except ImportError:
         pass
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[4]
 
 
 def _validate_config(config: _EngineConfig) -> None:

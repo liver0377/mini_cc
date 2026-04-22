@@ -155,9 +155,9 @@ RunHarness
    ▼
 SupervisorLoop（主循环）
    │
-   ├── Scheduler.schedule()     ──► 选择下一步骤
+   ├── Scheduler.schedule()     ──► 选择下一 WorkItem
    │
-   ├── StepRunner.execute()     ──► 执行步骤
+   ├── StepRunner.execute()     ──► 执行 WorkItem
    │        │
    │        ├── 构建 prompt ──► QueryEngine ──► 收集结果
    │        └── 或执行 bash / 委派智能体
@@ -166,11 +166,11 @@ SupervisorLoop（主循环）
    │
    ├── PolicyEngine.decide()    ──► 决策下一步行动
    │        │
-   │        ├── CONTINUE  ──► 继续下一步骤
+   │        ├── CONTINUE  ──► 继续下一 WorkItem / Step
    │        ├── RETRY     ──► 重试当前步骤
    │        ├── COOLDOWN  ──► 冷却等待
    │        ├── REPLAN    ──► 重新规划
-   │        ├── BLOCK     ──► 阻塞
+   │        ├── BLOCK     ──► 保护性失败终止
    │        ├── FAIL      ──► 标记失败
    │        └── TIME_OUT  ──► 超时终止
    │

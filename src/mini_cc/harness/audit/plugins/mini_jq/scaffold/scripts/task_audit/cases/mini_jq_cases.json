@@ -1,226 +1,475 @@
 [
   {
-    "id": "identity_null",
+    "id": "core_identity_null",
+    "layer": "core",
     "category": "identity",
     "filter": ".",
     "input": "null",
     "expected_exit": 0
   },
   {
-    "id": "identity_number",
+    "id": "core_identity_number",
+    "layer": "core",
     "category": "identity",
     "filter": ".",
     "input": "42",
     "expected_exit": 0
   },
   {
-    "id": "identity_string",
+    "id": "core_identity_string",
+    "layer": "core",
     "category": "identity",
     "filter": ".",
     "input": "\"hello\"",
     "expected_exit": 0
   },
   {
-    "id": "identity_object",
-    "category": "identity",
-    "filter": ".",
-    "input": "{\"a\":1}",
-    "expected_exit": 0
-  },
-  {
-    "id": "identity_array",
-    "category": "identity",
-    "filter": ".",
-    "input": "[1,2,3]",
-    "expected_exit": 0
-  },
-  {
-    "id": "field_access_basic",
-    "category": "field_access",
-    "filter": ".foo",
-    "input": "{\"foo\":42,\"bar\":7}",
-    "expected_exit": 0
-  },
-  {
-    "id": "field_access_string",
-    "category": "field_access",
-    "filter": ".name",
-    "input": "{\"name\":\"alice\"}",
-    "expected_exit": 0
-  },
-  {
-    "id": "field_access_nested",
-    "category": "nested_field_access",
-    "filter": ".a.b",
-    "input": "{\"a\":{\"b\":2}}",
-    "expected_exit": 0
-  },
-  {
-    "id": "field_access_deep_nested",
-    "category": "nested_field_access",
-    "filter": ".a.b.c",
-    "input": "{\"a\":{\"b\":{\"c\":3}}}",
-    "expected_exit": 0
-  },
-  {
-    "id": "field_access_missing_returns_null",
-    "category": "field_access",
-    "filter": ".missing",
-    "input": "{\"foo\":1}",
-    "expected_exit": 0
-  },
-  {
-    "id": "array_index_first",
-    "category": "array_index",
-    "filter": ".[0]",
-    "input": "[10,20,30]",
-    "expected_exit": 0
-  },
-  {
-    "id": "array_index_last",
-    "category": "array_index",
-    "filter": ".[2]",
-    "input": "[10,20,30]",
-    "expected_exit": 0
-  },
-  {
-    "id": "array_index_out_of_bounds",
-    "category": "array_index",
-    "filter": ".[10]",
-    "input": "[1,2,3]",
-    "expected_exit": 0
-  },
-  {
-    "id": "array_index_negative",
-    "category": "array_index",
-    "filter": ".[-1]",
-    "input": "[10,20,30]",
-    "expected_exit": 0
-  },
-  {
-    "id": "pipe_identity",
-    "category": "pipe",
-    "filter": ". | .",
-    "input": "42",
-    "expected_exit": 0
-  },
-  {
-    "id": "pipe_field",
-    "category": "pipe",
-    "filter": ". | .foo",
-    "input": "{\"foo\":99}",
-    "expected_exit": 0
-  },
-  {
-    "id": "pipe_chained",
-    "category": "pipe",
-    "filter": ".a | .b",
-    "input": "{\"a\":{\"b\":\"deep\"}}",
-    "expected_exit": 0
-  },
-  {
-    "id": "pipe_index_then_field",
-    "category": "pipe",
-    "filter": ".[0] | .x",
-    "input": "[{\"x\":1},{\"x\":2}]",
-    "expected_exit": 0
-  },
-  {
-    "id": "array_iterator_basic",
-    "category": "array_iterator",
-    "filter": ".[]",
-    "input": "[1,2,3]",
-    "expected_exit": 0
-  },
-  {
-    "id": "array_iterator_object_values",
-    "category": "array_iterator",
-    "filter": ".[]",
-    "input": "[{\"a\":1},{\"a\":2}]",
-    "expected_exit": 0
-  },
-  {
-    "id": "array_iterator_pipe_field",
-    "category": "array_iterator",
-    "filter": "[].foo",
-    "input": "[{\"foo\":1},{\"foo\":2}]",
-    "expected_exit": 0
-  },
-  {
-    "id": "object_iterator",
-    "category": "array_iterator",
-    "filter": ".[]",
-    "input": "{\"a\":1,\"b\":2}",
-    "expected_exit": 0
-  },
-  {
-    "id": "invalid_filter_exit_code",
-    "category": "error_contract",
-    "filter": "!!!invalid",
-    "input": "null",
-    "expected_exit": 1
-  },
-  {
-    "id": "invalid_json_exit_code",
-    "category": "error_contract",
-    "filter": ".",
-    "input": "not json at all",
-    "expected_exit": 1
-  },
-  {
-    "id": "field_on_scalar_exit_code",
-    "category": "error_contract",
-    "filter": ".foo",
-    "input": "42",
-    "expected_exit": 1
-  },
-  {
-    "id": "index_on_object_exit_code",
-    "category": "error_contract",
-    "filter": ".[0]",
-    "input": "{\"a\":1}",
-    "expected_exit": 1
-  },
-  {
-    "id": "identity_boolean",
+    "id": "core_identity_boolean",
+    "layer": "core",
     "category": "identity",
     "filter": ".",
     "input": "true",
     "expected_exit": 0
   },
   {
-    "id": "identity_empty_object",
+    "id": "core_identity_object",
+    "layer": "core",
     "category": "identity",
     "filter": ".",
-    "input": "{}",
+    "input": "{\"a\":1}",
     "expected_exit": 0
   },
   {
-    "id": "identity_empty_array",
-    "category": "identity",
-    "filter": ".",
-    "input": "[]",
+    "id": "core_literal_number",
+    "layer": "core",
+    "category": "literals",
+    "filter": "123",
+    "input": "{\"ignored\":true}",
     "expected_exit": 0
   },
   {
-    "id": "field_access_nested_mixed",
+    "id": "core_literal_string",
+    "layer": "core",
+    "category": "literals",
+    "filter": "\"abc\"",
+    "input": "null",
+    "expected_exit": 0
+  },
+  {
+    "id": "core_literal_array",
+    "layer": "core",
+    "category": "literals",
+    "filter": "[1,2,3]",
+    "input": "null",
+    "expected_exit": 0
+  },
+  {
+    "id": "core_literal_object",
+    "layer": "core",
+    "category": "literals",
+    "filter": "{\"x\":1,\"y\":2}",
+    "input": "null",
+    "expected_exit": 0
+  },
+  {
+    "id": "core_field_access_basic",
+    "layer": "core",
+    "category": "field_access",
+    "filter": ".foo",
+    "input": "{\"foo\":42,\"bar\":7}",
+    "expected_exit": 0
+  },
+  {
+    "id": "core_field_access_missing_returns_null",
+    "layer": "core",
+    "category": "field_access",
+    "filter": ".missing",
+    "input": "{\"foo\":1}",
+    "expected_exit": 0
+  },
+  {
+    "id": "core_field_access_quoted_key",
+    "layer": "core",
+    "category": "field_access",
+    "filter": ".[\"kebab-key\"]",
+    "input": "{\"kebab-key\":9}",
+    "expected_exit": 0
+  },
+  {
+    "id": "core_nested_field_access",
+    "layer": "core",
+    "category": "nested_field_access",
+    "filter": ".a.b.c",
+    "input": "{\"a\":{\"b\":{\"c\":3}}}",
+    "expected_exit": 0
+  },
+  {
+    "id": "core_nested_mixed_access",
+    "layer": "core",
     "category": "nested_field_access",
     "filter": ".users[0].name",
     "input": "{\"users\":[{\"name\":\"alice\"},{\"name\":\"bob\"}]}",
     "expected_exit": 0
   },
   {
-    "id": "pipe_triple_chain",
+    "id": "core_array_index_first",
+    "layer": "core",
+    "category": "array_index",
+    "filter": ".[0]",
+    "input": "[10,20,30]",
+    "expected_exit": 0
+  },
+  {
+    "id": "core_array_index_negative",
+    "layer": "core",
+    "category": "array_index",
+    "filter": ".[-1]",
+    "input": "[10,20,30]",
+    "expected_exit": 0
+  },
+  {
+    "id": "core_array_index_out_of_bounds",
+    "layer": "core",
+    "category": "array_index",
+    "filter": ".[10]",
+    "input": "[1,2,3]",
+    "expected_exit": 0
+  },
+  {
+    "id": "core_array_slice_middle",
+    "layer": "core",
+    "category": "array_slice",
+    "filter": ".[1:3]",
+    "input": "[10,20,30,40]",
+    "expected_exit": 0
+  },
+  {
+    "id": "core_array_slice_open_start",
+    "layer": "core",
+    "category": "array_slice",
+    "filter": ".[:2]",
+    "input": "[10,20,30,40]",
+    "expected_exit": 0
+  },
+  {
+    "id": "core_pipe_chained",
+    "layer": "core",
     "category": "pipe",
     "filter": ".a | .b | .c",
     "input": "{\"a\":{\"b\":{\"c\":42}}}",
     "expected_exit": 0
   },
   {
-    "id": "array_iterator_then_pipe",
+    "id": "core_pipe_index_then_field",
+    "layer": "core",
+    "category": "pipe",
+    "filter": ".[0] | .x",
+    "input": "[{\"x\":1},{\"x\":2}]",
+    "expected_exit": 0
+  },
+  {
+    "id": "core_comma_multiple_results",
+    "layer": "core",
+    "category": "comma",
+    "filter": ".a, .b",
+    "input": "{\"a\":1,\"b\":2}",
+    "expected_exit": 0
+  },
+  {
+    "id": "core_array_iterator_basic",
+    "layer": "core",
+    "category": "array_iterator",
+    "filter": ".[]",
+    "input": "[1,2,3]",
+    "expected_exit": 0
+  },
+  {
+    "id": "core_object_iterator_values",
+    "layer": "core",
+    "category": "array_iterator",
+    "filter": ".[]",
+    "input": "{\"a\":1,\"b\":2}",
+    "expected_exit": 0
+  },
+  {
+    "id": "core_array_iterator_then_pipe",
+    "layer": "core",
     "category": "array_iterator",
     "filter": ".[] | .name",
     "input": "[{\"name\":\"a\"},{\"name\":\"b\"}]",
     "expected_exit": 0
+  },
+  {
+    "id": "core_array_constructor_from_fields",
+    "layer": "core",
+    "category": "constructors",
+    "filter": "[.a, .b]",
+    "input": "{\"a\":1,\"b\":2}",
+    "expected_exit": 0
+  },
+  {
+    "id": "core_object_constructor_shorthand",
+    "layer": "core",
+    "category": "constructors",
+    "filter": "{name, age}",
+    "input": "{\"name\":\"alice\",\"age\":30,\"ignored\":true}",
+    "expected_exit": 0
+  },
+  {
+    "id": "language_if_then_else",
+    "layer": "language",
+    "category": "conditionals",
+    "filter": "if .enabled then .name else \"disabled\" end",
+    "input": "{\"enabled\":true,\"name\":\"demo\"}",
+    "expected_exit": 0
+  },
+  {
+    "id": "language_if_false_branch",
+    "layer": "language",
+    "category": "conditionals",
+    "filter": "if .enabled then .name else \"disabled\" end",
+    "input": "{\"enabled\":false,\"name\":\"demo\"}",
+    "expected_exit": 0
+  },
+  {
+    "id": "language_variable_binding",
+    "layer": "language",
+    "category": "variables",
+    "filter": ".foo as $x | $x + 1",
+    "input": "{\"foo\":41}",
+    "expected_exit": 0
+  },
+  {
+    "id": "language_variable_object_construction",
+    "layer": "language",
+    "category": "variables",
+    "filter": ".user as $u | {name: $u.name, active: .active}",
+    "input": "{\"user\":{\"name\":\"ada\"},\"active\":true}",
+    "expected_exit": 0
+  },
+  {
+    "id": "language_function_definition",
+    "layer": "language",
+    "category": "functions",
+    "filter": "def inc: . + 1; inc",
+    "input": "41",
+    "expected_exit": 0
+  },
+  {
+    "id": "language_function_argument",
+    "layer": "language",
+    "category": "functions",
+    "filter": "def addn($n): . + $n; addn(5)",
+    "input": "37",
+    "expected_exit": 0
+  },
+  {
+    "id": "language_reduce_sum",
+    "layer": "language",
+    "category": "reduce",
+    "filter": "reduce .[] as $x (0; . + $x)",
+    "input": "[1,2,3,4]",
+    "expected_exit": 0
+  },
+  {
+    "id": "language_reduce_object",
+    "layer": "language",
+    "category": "reduce",
+    "filter": "reduce .[] as $item ({}; .[$item.key] = $item.value)",
+    "input": "[{\"key\":\"a\",\"value\":1},{\"key\":\"b\",\"value\":2}]",
+    "expected_exit": 0
+  },
+  {
+    "id": "language_try_catch",
+    "layer": "language",
+    "category": "conditionals",
+    "filter": "try .missing[0] catch \"handled\"",
+    "input": "{\"x\":1}",
+    "expected_exit": 0
+  },
+  {
+    "id": "language_update_assignment",
+    "layer": "language",
+    "category": "variables",
+    "filter": ".count += 1",
+    "input": "{\"count\":4}",
+    "expected_exit": 0
+  },
+  {
+    "id": "builtin_type_object",
+    "layer": "builtin",
+    "category": "builtin_type",
+    "filter": "type",
+    "input": "{\"a\":1}",
+    "expected_exit": 0
+  },
+  {
+    "id": "builtin_type_array",
+    "layer": "builtin",
+    "category": "builtin_type",
+    "filter": "type",
+    "input": "[1,2]",
+    "expected_exit": 0
+  },
+  {
+    "id": "builtin_length_array",
+    "layer": "builtin",
+    "category": "builtin_length",
+    "filter": "length",
+    "input": "[1,2,3]",
+    "expected_exit": 0
+  },
+  {
+    "id": "builtin_length_string",
+    "layer": "builtin",
+    "category": "builtin_length",
+    "filter": "length",
+    "input": "\"hello\"",
+    "expected_exit": 0
+  },
+  {
+    "id": "builtin_keys_object",
+    "layer": "builtin",
+    "category": "builtin_keys",
+    "filter": "keys",
+    "input": "{\"b\":2,\"a\":1}",
+    "expected_exit": 0
+  },
+  {
+    "id": "builtin_has_key",
+    "layer": "builtin",
+    "category": "builtin_has",
+    "filter": "has(\"a\")",
+    "input": "{\"a\":1}",
+    "expected_exit": 0
+  },
+  {
+    "id": "builtin_map_select",
+    "layer": "builtin",
+    "category": "builtin_map_select",
+    "filter": "map(select(. > 2))",
+    "input": "[1,2,3,4]",
+    "expected_exit": 0
+  },
+  {
+    "id": "builtin_map_field",
+    "layer": "builtin",
+    "category": "builtin_map_select",
+    "filter": "map(.name)",
+    "input": "[{\"name\":\"a\"},{\"name\":\"b\"}]",
+    "expected_exit": 0
+  },
+  {
+    "id": "builtin_sort_numbers",
+    "layer": "builtin",
+    "category": "builtin_sort",
+    "filter": "sort",
+    "input": "[3,1,2]",
+    "expected_exit": 0
+  },
+  {
+    "id": "builtin_sort_by_field",
+    "layer": "builtin",
+    "category": "builtin_sort",
+    "filter": "sort_by(.age) | map(.name)",
+    "input": "[{\"name\":\"b\",\"age\":2},{\"name\":\"a\",\"age\":1}]",
+    "expected_exit": 0
+  },
+  {
+    "id": "builtin_string_split",
+    "layer": "builtin",
+    "category": "builtin_string",
+    "filter": "split(\",\")",
+    "input": "\"a,b,c\"",
+    "expected_exit": 0
+  },
+  {
+    "id": "builtin_string_join",
+    "layer": "builtin",
+    "category": "builtin_string",
+    "filter": "join(\"-\")",
+    "input": "[\"a\",\"b\",\"c\"]",
+    "expected_exit": 0
+  },
+  {
+    "id": "builtin_string_contains",
+    "layer": "builtin",
+    "category": "builtin_string",
+    "filter": "contains(\"bc\")",
+    "input": "\"abcd\"",
+    "expected_exit": 0
+  },
+  {
+    "id": "builtin_tostring",
+    "layer": "builtin",
+    "category": "builtin_conversion",
+    "filter": "tostring",
+    "input": "42",
+    "expected_exit": 0
+  },
+  {
+    "id": "builtin_tonumber",
+    "layer": "builtin",
+    "category": "builtin_conversion",
+    "filter": "tonumber + 1",
+    "input": "\"41\"",
+    "expected_exit": 0
+  },
+  {
+    "id": "builtin_arithmetic_add",
+    "layer": "builtin",
+    "category": "builtin_arithmetic",
+    "filter": ".a + .b",
+    "input": "{\"a\":20,\"b\":22}",
+    "expected_exit": 0
+  },
+  {
+    "id": "builtin_arithmetic_multiply",
+    "layer": "builtin",
+    "category": "builtin_arithmetic",
+    "filter": ".items | map(.price * .qty) | add",
+    "input": "{\"items\":[{\"price\":3,\"qty\":2},{\"price\":4,\"qty\":5}]}",
+    "expected_exit": 0
+  },
+  {
+    "id": "builtin_cli_compact_output",
+    "layer": "builtin",
+    "category": "builtin_conversion",
+    "filter": ".",
+    "input": "{\"a\":1,\"b\":[2,3]}",
+    "options": ["-c"],
+    "expected_exit": 0
+  },
+  {
+    "id": "error_invalid_filter_exit_code",
+    "layer": "core",
+    "category": "error_contract",
+    "filter": "!!!invalid",
+    "input": "null",
+    "expected_exit": 1
+  },
+  {
+    "id": "error_invalid_json_exit_code",
+    "layer": "core",
+    "category": "error_contract",
+    "filter": ".",
+    "input": "not json at all",
+    "expected_exit": 1
+  },
+  {
+    "id": "error_field_on_scalar_exit_code",
+    "layer": "core",
+    "category": "error_contract",
+    "filter": ".foo",
+    "input": "42",
+    "expected_exit": 1
+  },
+  {
+    "id": "error_index_on_object_exit_code",
+    "layer": "core",
+    "category": "error_contract",
+    "filter": ".[0]",
+    "input": "{\"a\":1}",
+    "expected_exit": 1
   }
 ]

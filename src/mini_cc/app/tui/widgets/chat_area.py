@@ -154,6 +154,17 @@ class ChatArea(VerticalScroll):
             strip.complete_tool(tool_name, success, output_preview)
         self.scroll_end(animate=False)
 
+    async def add_agent_heartbeat(self, agent_id: str, elapsed_seconds: int, status: str) -> None:
+        color = self._agent_color(agent_id)
+        widget = Static(
+            f"  [dim]心跳[/] [bold {color}]子 Agent {agent_id}[/]"
+            f"[dim] alive {elapsed_seconds}s ({escape(status)})[/]",
+            classes="agent-msg",
+            markup=True,
+        )
+        await self.mount(widget)
+        self.scroll_end(animate=False)
+
     async def add_agent_notification(self, *, agent_id: str, task_id: int, success: bool, output: str) -> None:
         strip = self._agent_strips.pop(agent_id, None)
         if strip is not None:

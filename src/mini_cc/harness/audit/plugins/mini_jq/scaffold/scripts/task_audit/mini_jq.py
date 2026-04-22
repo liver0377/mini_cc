@@ -11,13 +11,32 @@ CASES_FILE = Path(__file__).parent / "cases" / "mini_jq_cases.json"
 
 CATEGORIES_ORDER = [
     "identity",
+    "literals",
     "field_access",
     "nested_field_access",
     "array_index",
+    "array_slice",
     "pipe",
+    "comma",
+    "constructors",
     "array_iterator",
+    "conditionals",
+    "variables",
+    "functions",
+    "reduce",
+    "builtin_type",
+    "builtin_length",
+    "builtin_keys",
+    "builtin_has",
+    "builtin_map_select",
+    "builtin_sort",
+    "builtin_string",
+    "builtin_conversion",
+    "builtin_arithmetic",
     "error_contract",
 ]
+
+LAYERS_ORDER = ["core", "language", "builtin"]
 
 
 def load_cases() -> list[dict[str, object]]:
@@ -43,10 +62,22 @@ def find_mini_jq_binary() -> str | None:
     return None
 
 
-def run_jq(jq_bin: str, filter_expr: str, input_json: str, timeout: int = 5) -> tuple[str, str, int]:
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
+def run_jq(
+    jq_bin: str,
+    filter_expr: str,
+    input_json: str,
+    options: list[str] | None = None,
+    timeout: int = 5,
+) -> tuple[str, str, int]:
     try:
         proc = subprocess.run(
-            [jq_bin, filter_expr],
+            [jq_bin, *list(options or []), filter_expr],
             input=input_json,
             capture_output=True,
             text=True,
@@ -93,14 +124,22 @@ def build_coverage(
     cases: list[dict[str, object]],
     results: dict[str, bool],
 ) -> dict[str, bool | str]:
-    category_state: dict[str, list[bool]] = {}
+    return build_group_coverage(cases, results, "category")
+
+
+def build_group_coverage(
+    cases: list[dict[str, object]],
+    results: dict[str, bool],
+    group_key: str,
+) -> dict[str, bool | str]:
+    group_state: dict[str, list[bool]] = {}
     for case in cases:
-        cat = str(case.get("category", "unknown"))
+        cat = str(case.get(group_key, "unknown"))
         passed = results.get(str(case.get("id", "")), False)
-        category_state.setdefault(cat, []).append(passed)
+        group_state.setdefault(cat, []).append(passed)
     coverage: dict[str, bool | str] = {}
-    for cat in category_state:
-        bools = category_state[cat]
+    for cat in group_state:
+        bools = group_state[cat]
         if all(bools):
             coverage[cat] = True
         elif any(bools):
@@ -147,9 +186,39 @@ def find_regressions(
 
 def recommend_next_focus(
     coverage: dict[str, bool | str],
+    layer_coverage: dict[str, bool | str],
     blockers: list[str],
 ) -> str | None:
-    priority = ["identity", "field_access", "nested_field_access", "array_index", "pipe", "array_iterator"]
+    for layer in LAYERS_ORDER:
+        state = layer_coverage.get(layer)
+        if state is False:
+            return f"implement_{layer}_layer"
+        if state == "partial":
+            return f"fix_{layer}_layer_edge_cases"
+    priority = [
+        "identity",
+        "field_access",
+        "nested_field_access",
+        "array_index",
+        "array_slice",
+        "pipe",
+        "comma",
+        "constructors",
+        "array_iterator",
+        "conditionals",
+        "variables",
+        "functions",
+        "reduce",
+        "builtin_type",
+        "builtin_length",
+        "builtin_keys",
+        "builtin_has",
+        "builtin_map_select",
+        "builtin_sort",
+        "builtin_string",
+        "builtin_conversion",
+        "builtin_arithmetic",
+    ]
     for cat in priority:
         state = coverage.get(cat)
         if state is False:
@@ -196,9 +265,12 @@ def main() -> None:
         case_id = str(case.get("id", ""))
         filter_expr = str(case.get("filter", "."))
         input_json = str(case.get("input", "null"))
+        options = _string_list(case.get("options"))
+        timeout = case.get("timeout", 5)
+        timeout_value = timeout if isinstance(timeout, int) else 5
 
-        ref_out, ref_err, ref_rc = run_jq(jq_bin, filter_expr, input_json)
-        tgt_out, tgt_err, tgt_rc = run_jq(mini_jq_bin, filter_expr, input_json)
+        ref_out, ref_err, ref_rc = run_jq(jq_bin, filter_expr, input_json, options, timeout_value)
+        tgt_out, tgt_err, tgt_rc = run_jq(mini_jq_bin, filter_expr, input_json, options, timeout_value)
 
         ok, reason = compare_outputs(ref_out, ref_err, ref_rc, tgt_out, tgt_err, tgt_rc, case)
         results[case_id] = ok
@@ -215,7 +287,8 @@ def main() -> None:
     coverage = build_coverage(cases, results)
     blockers = find_blockers(cases, results, details)
     regressions = find_regressions(results, prev_results)
-    next_focus = recommend_next_focus(coverage, blockers)
+    layer_coverage = build_group_coverage(cases, results, "layer")
+    next_focus = recommend_next_focus(coverage, layer_coverage, blockers)
 
     score_total = passed_count * 10 - failed_count * 5
 
@@ -228,6 +301,7 @@ def main() -> None:
         },
         "score_total": score_total,
         "coverage": coverage,
+        "layers": layer_coverage,
         "blockers": blockers[:5],
         "regressions": regressions[:5],
         "improvements": improvements[:5],

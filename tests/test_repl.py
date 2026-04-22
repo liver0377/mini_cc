@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from rich.console import Console
 
+from mini_cc.app.repl import REPLConfig, render_event
 from mini_cc.models import (
     AgentCompletionEvent,
     AgentStartEvent,
@@ -15,10 +16,14 @@ from mini_cc.models import (
     ToolCallStart,
     ToolResultEvent,
 )
-from mini_cc.app.repl import REPLConfig, render_event
+from mini_cc.runtime.execution.factories import _project_root
 
 
 class TestREPLConfig:
+    def test_dotenv_project_root_is_repo_root(self) -> None:
+        assert (_project_root() / "pyproject.toml").is_file()
+        assert (_project_root() / "src" / "mini_cc").is_dir()
+
     def test_from_env_with_values(self) -> None:
         env = {
             "OPENAI_API_KEY": "test-key",
